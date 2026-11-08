@@ -100,3 +100,27 @@ class ReplyReaderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ModelPickerTests(unittest.TestCase):
+    picker = """
+   Select model
+     1.  Default (recommended)  Opus 5.5
+   ❯ 2.  Opus 5.5 ✔             For complex work
+     3.  Sonnet 5.5             Efficient
+     4.  Fable 5.1              For your toughest challenges
+   ↓ 5.  Haiku 5.5              Fast
+   Enter to set as default · s to use this session only · Esc to cancel
+"""
+
+    def test_reads_highlight_and_actual_model_separately(self):
+        selected, rows = MODULE.read_model_picker(self.picker)
+        self.assertEqual(selected, 2)
+        self.assertEqual(rows[2], ("Opus 5.5", True))
+        self.assertEqual(rows[4], ("Fable 5.1", False))
+        self.assertEqual(rows[5], ("Haiku 5.5", False))
+
+    def test_refuses_picker_without_session_only_binding(self):
+        self.assertIsNone(MODULE.read_model_picker(
+            self.picker.replace("s to use this session only", "x to use this session only")
+        ))

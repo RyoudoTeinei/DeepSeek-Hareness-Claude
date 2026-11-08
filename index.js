@@ -5,8 +5,20 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import path from 'node:path';
-const route='dsh-remote-claude', model='claude-code';
-const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputModalities:['text']};
+const route='dsh-remote-claude';
+const followTerminal='claude-code';
+const models=[
+ [followTerminal,'Claude Code · 跟随终端'],
+ ['claude-opus-5-5','Opus 5.5'],
+ ['claude-fable-5-1','Fable 5.1'],
+ ['claude-sonnet-5-5','Sonnet 5.5'],
+ ['claude-haiku-5-5','Haiku 5.5'],
+].map(([id,name])=>({provider:route,id,name,inputModalities:['text']}));
+function modelInfo(id){
+ const entry=models.find(model=>model.id===id);
+ if(!entry)throw Error('此 Claude 型号未注册，请重新选择模型。');
+ return entry;
+}
 const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
@@ -15,11 +27,16 @@ export function apply(ctx){
   providerInfo:()=>({id:route,name:'Claude Code'}),
   providerRetryPolicy:()=>({mode:'normal',maxRetries:0,retryableCodes:[],backoff:{}}),
   imageRequestPricing:()=>undefined,imageRequestTarget:()=>undefined,
-  listModels:async()=>[info],resolveModel:async()=>info,
-  prepareCall:async()=>({model:info,stream}),stream
+  listModels:async()=>models,
+  resolveModel:async(_provider,id)=>modelInfo(id),
+  prepareCall:async(_provider,id)=>{
+   const model=modelInfo(id);
+   return {model,stream:request=>stream(request,model.id)};
+  },
+  stream:request=>stream(request,modelInfo(request.model).id),
  }));
 }
-async function* stream(request){
+async function* stream(request,model){
  const id=request.sessionId;
  if(!id)throw Error('此模型仅用于已连接的 Claude 工作区会话。');
  let cfg;
@@ -32,7 +49,7 @@ async function* stream(request){
  let error='',body='',done=false;
  const completion=new Promise(resolve=>{cp.on('error',e=>resolve(e.message));cp.on('close',code=>resolve(code===0?'':error||'SSH 通道关闭'))});
  cp.stderr.on('data',b=>{error=(error+b).slice(-800)});cp.stdin.on('error',()=>{});
- const lines=createInterface({input:cp.stdout});cp.stdin.end(JSON.stringify({session:'dsh-'+key+'-claude',project:cfg.project,text}));
+ const lines=createInterface({input:cp.stdout});cp.stdin.end(JSON.stringify({session:'dsh-'+key+'-claude',project:cfg.project,text,model:model===followTerminal?null:model}));
  try{
   yield {type:'block-start',index:0,blockType:'text'};
   for await(const line of lines){

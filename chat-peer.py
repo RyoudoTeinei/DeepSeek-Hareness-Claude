@@ -69,6 +69,136 @@ class TurnReader:
         return texts
 
 
+def capture(pane):
+    raw = tmux("capture-pane", "-e", "-p", "-t", pane)
+    # Dim text after the input marker is the inline suggestion.
+    clean = re.sub(r"(❯\s*)\x1b\[2m[^\n]*", r"\1", raw)
+    return re.sub(r"\x1b\[[0-9;]*m", "", clean)
+
+
+def editor_text(screen):
+    return next((line.strip()[1:].strip() for line in reversed(screen.splitlines())
+                 if line.strip().startswith("❯")), None)
+
+
+def editor_empty(screen):
+    text = editor_text(screen)
+    return text is not None and (not text or text.startswith('Try "'))
+
+
+def wait_for(pane, read, timeout=4):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = read(capture(pane))
+        if result:
+            return result
+        time.sleep(.1)
+    return None
+
+
+def paste(pane, buffer_name, text):
+    tmux("load-buffer", "-b", buffer_name, "-", data=text.encode())
+    tmux("paste-buffer", "-d", "-p", "-b", buffer_name, "-t", pane)
+
+
+def read_model_picker(screen):
+    header = re.search(r"^\s*Select model\s*$", screen, re.MULTILINE)
+    if not header:
+        return None
+    menu = screen[header.end():]
+    if "s to use this session only" not in menu:
+        return None
+    rows = {}
+    selected = None
+    for line in menu.splitlines():
+        match = re.match(r"^\s*([❯↑↓])?\s*(\d+)\.\s+(.+)$", line)
+        if not match:
+            continue
+        marker, index, description = match.groups()
+        label = re.split(r"\s{2,}", description.strip(), maxsplit=1)[0]
+        current = label.endswith(("✔", "✓"))
+        label = label.rstrip("✔✓ ").strip()
+        rows[int(index)] = (label, current)
+        if marker == "❯":
+            selected = int(index)
+    return (selected, rows) if selected in rows else None
+
+
+def open_model_picker(pane, buffer_name):
+    if not editor_empty(capture(pane)):
+        raise ValueError("右侧输入框有草稿或正等待确认，请先处理。")
+    paste(pane, buffer_name, "/model")
+    if not wait_for(pane, lambda screen: editor_text(screen) == "/model"):
+        raise ValueError("无法确认模型命令已填入，请检查右侧终端。")
+    tmux("send-keys", "-t", pane, "Enter")
+    picker = wait_for(pane, read_model_picker)
+    if not picker:
+        raise ValueError("无法读取 Claude 模型菜单，请检查右侧终端。")
+    return picker
+
+
+def move_picker(pane, selected, key):
+    tmux("send-keys", "-t", pane, key)
+
+    def changed(screen):
+        picker = read_model_picker(screen)
+        return picker if picker and picker[0] != selected else None
+
+    return wait_for(pane, changed, timeout=1)
+
+
+def close_model_picker(pane):
+    if read_model_picker(capture(pane)):
+        tmux("send-keys", "-t", pane, "Escape")
+    if not wait_for(pane, editor_empty):
+        raise ValueError("请处理右侧终端的提示后重试。")
+
+
+def select_model(pane, buffer_name, model):
+    match = re.fullmatch(r"claude-(opus|fable|sonnet|haiku)-(\d+)-(\d+)", model)
+    if not match:
+        raise ValueError("无效的 Claude 模型 ID。")
+    family, major, minor = match.groups()
+    wanted = f"{family.title()} {major}.{minor}"
+    picker = open_model_picker(pane, buffer_name)
+    # When the menu is scrolled, first locate the beginning, then walk down.
+    searching_down = False
+    for _ in range(24):
+        index, rows = picker
+        targets = [number for number, row in rows.items() if row[0] == wanted]
+        if len(targets) > 1:
+            break
+        if targets and targets[0] == index:
+            if rows[index][1]:
+                close_model_picker(pane)
+                return
+            # The picker advertises this session-only action. Enter here would
+            # save the model as the account-wide default.
+            current = read_model_picker(capture(pane))
+            if current != picker:
+                raise ValueError("模型菜单已变化，请重试。")
+            tmux("send-keys", "-t", pane, "s")
+            if not wait_for(pane, editor_empty):
+                screen = capture(pane)
+                if "Switch to Fable" in screen and "You don't have usage credits yet" in screen:
+                    raise ValueError("此账号尚无 Fable 所需的 usage credits，消息未发送。")
+                raise ValueError(f"切换 {wanted} 需要确认，请处理右侧终端后重试。")
+            _, verified = open_model_picker(pane, buffer_name)
+            close_model_picker(pane)
+            if any(label == wanted and active for label, active in verified.values()):
+                return
+            raise ValueError(f"远端未确认已切换到 {wanted}，消息未发送。")
+        if min(rows) == 1:
+            searching_down = True
+        key = "Up" if (targets and targets[0] < index) or (not targets and not searching_down) else "Down"
+        next_picker = move_picker(pane, index, key)
+        if not next_picker:
+            break
+        picker = next_picker
+    close_model_picker(pane)
+    raise ValueError(f"远端 Claude Code 的模型菜单没有可用的 {wanted} 选项。")
+
+
 def run():
     import fcntl  # Only the remote Linux entry point needs the file lock.
     req=json.load(sys.stdin)
@@ -91,19 +221,20 @@ def run():
     if not log.exists():
         matches=list((home/".claude/projects").glob("*/"+session+".jsonl"))
         if matches: log=matches[0]
-    offset=log.stat().st_size if log.exists() else 0
     prompt=req["text"]
     if not prompt.strip() or any(ord(c)<32 and c not in "\n\t" for c in prompt): raise ValueError("仅支持普通文本")
     if prompt.lstrip().startswith(("/","!")): raise ValueError("斜杠命令和 Shell 命令请在右侧终端执行。")
-    raw_screen=tmux("capture-pane","-e","-p","-t",pane)
-    # Dim text after the prompt is Claude's suggestion, not typed input.
-    clean_screen=re.sub(r"(❯\s*)\x1b\[2m[^\n]*",r"\1",raw_screen)
-    line=re.sub(r"\x1b\[[0-9;]*m","",clean_screen).splitlines()
-    editor=next((s.strip()[1:].strip() for s in reversed(line) if s.strip().startswith("❯")),None)
-    if editor is None or (editor and not editor.startswith('Try "')): raise ValueError("右侧输入框有草稿或正等待确认，请先处理。")
     name="dshchat-"+pid
-    tmux("load-buffer","-b",name,"-",data=prompt.encode())
-    tmux("paste-buffer","-d","-p","-b",name,"-t",pane)
+    if req.get("model"):
+        select_model(pane, name, req["model"])
+    if not editor_empty(capture(pane)):
+        raise ValueError("右侧输入框有草稿或正等待确认，请先处理。")
+    current = json.loads(statefile.read_text())
+    if current.get("sessionId") != session or current.get("status") != "idle":
+        raise ValueError("右侧 Claude 会话状态已变化，请检查终端后重试。")
+    # Model-picker commands can write transcript entries of their own.
+    offset=log.stat().st_size if log.exists() else 0
+    paste(pane, name, prompt)
     time.sleep(.25)
     tmux("send-keys","-t",pane,"Enter")
     reader=TurnReader(prompt)
