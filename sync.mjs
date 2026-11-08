@@ -63,7 +63,9 @@ async function main(){
  if(action!=='push')throw Error('未知操作');
  const cwd='"$HOME/projects/'+project+'"';
  report('check');
- execute('ssh',[...opts,host,'set -e; umask 077; mkdir -p '+cwd+'; cd '+cwd+'; if test ! -e .git; then test -z "$(ls -A)" || { echo "Remote directory is not empty" >&2; exit 1; }; git init -b '+quote(branch)+'; fi; test "$(git rev-parse --show-toplevel)" = "$(pwd -P)" && test "$(git symbolic-ref --short HEAD)" = '+quote(branch)+' && test -z "$(git status --porcelain)" || { echo "Remote branch or working tree is not ready" >&2; exit 1; }; git config receive.denyCurrentBranch updateInstead']);
+ // Untracked server outputs do not block unrelated uploads. Git updateInstead
+ // still rejects tracked edits and any untracked path an upload would overwrite.
+ execute('ssh',[...opts,host,'set -e; umask 077; mkdir -p '+cwd+'; cd '+cwd+'; if test ! -e .git; then test -z "$(ls -A)" || { echo "Remote directory is not empty" >&2; exit 1; }; git init -b '+quote(branch)+'; fi; test "$(git rev-parse --show-toplevel)" = "$(pwd -P)" || { echo "服务器目录不是 Git 仓库根目录" >&2; exit 1; }; test "$(git symbolic-ref --short HEAD)" = '+quote(branch)+' || { echo "服务器分支与本地分支不一致，请先核对分支" >&2; exit 1; }; test -z "$(git status --porcelain --untracked-files=no)" || { echo "服务器已有已跟踪文件的未提交改动，请先处理后再推送" >&2; git status --short --untracked-files=no >&2; exit 1; }; git config receive.denyCurrentBranch updateInstead']);
  if(files.length){
   report('scan');
   const current=new Map(changes().map(x=>[x.file,x.status]));

@@ -3,6 +3,9 @@
   "version": "0.3.0",
   "type": "module",
   "main": "./index.js",
+  "scripts": {
+    "test": "node tests/run.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

@@ -37,7 +37,9 @@ async function main(){
   const probe=ssh('if tmux has-session -t ='+name+' 2>/dev/null; then echo live; elif test -e '+mark+'; then echo ended; else echo new; fi',true);
   if(probe==='ended'&&!await yes('原会话已结束。启动一个新会话？'))return;
   rl?.close();
-  ssh(prefix+'command -v tmux >/dev/null || { echo "请先在服务器安装 tmux"; exit 1; }; mkdir -p "$HOME/.local/state/dsh-remote"; if ! tmux has-session -t ='+name+' 2>/dev/null; then tmux new-session -d -s '+name+' -c "$PWD" '+quote(start)+' || tmux has-session -t ='+name+'; touch '+mark+'; fi; if test -n "$(tmux list-clients -t ='+name+' -F "#{client_name}")"; then exec tmux attach -r -t ='+name+'; else exec tmux attach -t ='+name+'; fi',false,true);return;
+  // An explicit reconnect takes over the interactive client, while the Claude
+  // process and conversation remain running in the existing tmux session.
+  ssh(prefix+'command -v tmux >/dev/null || { echo "请先在服务器安装 tmux"; exit 1; }; mkdir -p "$HOME/.local/state/dsh-remote"; if ! tmux has-session -t ='+name+' 2>/dev/null; then tmux new-session -d -s '+name+' -c "$PWD" '+quote(start)+' || tmux has-session -t ='+name+'; touch '+mark+'; fi; tmux set-option -t '+name+' mouse on; exec tmux attach -d -t ='+name,false,true);return;
  }
  if(action==='image'){
   const tmp=mkdtempSync(path.join(tmpdir(),'dsh-image-')), file=path.join(tmp,'clipboard.png');
