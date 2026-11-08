@@ -1,3 +1,4 @@
+import {resumeSmartSync} from './smart-sync.mjs';
 import {outboundText} from './outbound.mjs';
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
@@ -9,6 +10,7 @@ const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputM
 const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
+ resumeSmartSync();
  ctx.inject(['llm'],child=>child.llm.registerAdapter([route],{
   providerInfo:()=>({id:route,name:'Claude Code'}),
   providerRetryPolicy:()=>({mode:'normal',maxRetries:0,retryableCodes:[],backoff:{}}),

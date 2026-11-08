@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-remote-claude",
-  "version": "0.3.0",
+  "version": "0.4.9",
   "type": "module",
   "main": "./index.js",
   "scripts": {
@@ -26,5 +26,5 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "description": "Claude 远程工作区 · 美西 SSH 终端、项目同步与图片上传"
+  "description": "DSH 远程 Claude Code 工作区、双向文件同步和服务器终端"
 }

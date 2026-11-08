@@ -1,9 +1,10 @@
+import {smartSync} from './smart-sync.mjs';
 import {returnFiles} from './return-files.mjs';
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,renameSync,readFileSync} from 'node:fs';
 import path from 'node:path';
-const {host,project,identity,action,sessionId,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
+const {host,project,identity,action,sessionId,syncSettings,smartSettings,diffPath,choice,expected,items,diffOffset,diffOnly,planToken,createRemote,badgeEntries,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
 function execute(exe,args,input){
  const r=spawnSync(exe,args,{encoding:'utf8',input,stdio:['pipe','pipe','pipe'],maxBuffer:32*1024*1024,timeout:120000,windowsHide:true,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
  if(r.error||r.status!==0)throw Error(r.error?.message||r.stderr.trim()||exe+' failed');
@@ -31,6 +32,19 @@ async function push(args){
  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error(err.trim()||'推送失败')))});
 }
 async function main(){
+ if(action==='smart-badges'){
+  if(!Array.isArray(badgeEntries)||badgeEntries.length>200)throw Error('工作区列表无效');
+  const badges=[];
+  for(const entry of badgeEntries){
+   if(typeof entry.path!=='string'||!path.isAbsolute(entry.path))continue;
+   try{
+    const state=smartSync('smart-status',{host:entry.host,project:entry.project,workspacePath:entry.path});
+    badges.push({id:entry.id,initialized:state.initialized,running:state.running,starting:state.starting,stopping:state.stopping,differences:state.report?.files.length||0,error:!!state.report?.error});
+   }catch{}
+  }
+  return badges;
+ }
+ if(['smart-status','smart-start','smart-stop','smart-save','smart-plan','smart-inspect','smart-resolve','smart-resolve-batch','smart-init'].includes(action))return smartSync(action,{host,project,identity,smartSettings,diffPath,choice,expected,items,diffOffset,diffOnly,planToken,createRemote});
  if(action==='quota'||action==='quota-enable'){
   if(!/^[\w][\w.@-]*$/.test(host)||typeof identity!=='string')throw Error('SSH 配置无效');
   const args=['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=8',...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),host];
@@ -47,7 +61,7 @@ async function main(){
   const file=path.join(dir,createHash('sha256').update(sessionId).digest('hex')+'.json'),temp=file+'.'+randomUUID();
   writeFileSync(temp,JSON.stringify({host,project,identity}),{mode:0o600});renameSync(temp,file);return true;
  }
- if(['watch-status','watch-on','watch-off'].includes(action))return returnFiles(action,{host,project,identity});
+ if(['watch-status','watch-on','watch-off','watch-apply'].includes(action))return returnFiles(action,{host,project,identity,syncSettings});
  if(path.resolve(git('rev-parse','--show-toplevel').trim()).toLowerCase()!==path.resolve('.').toLowerCase())throw Error('请在 Git 仓库根目录打开工作区。');
  const branch=git('symbolic-ref','--short','HEAD').trim();
  if(action==='list')return {branch,changes:changes()};
