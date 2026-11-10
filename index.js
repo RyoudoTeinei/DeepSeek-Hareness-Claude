@@ -25,12 +25,14 @@ async function* stream(request){
  catch{throw Error('请在当前工作区点一次「接入 Claude」以绑定左右会话。')}
  const text=outboundText(request.messages);
  const key=createHash('sha256').update(cfg.host+'\n'+cfg.project).digest('hex').slice(0,16);
+ const remoteSession=cfg.activeTmuxSession || 'dsh-'+key+'-claude';
+ if(!/^dsh-[a-f0-9]{16,32}-claude$/.test(remoteSession))throw Error('会话绑定无效，请重新接入。');
  const script=readFileSync(new URL('./chat-peer.py',import.meta.url)).toString('base64');
- const cp=spawn('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10',...(cfg.identity?['-i',cfg.identity,'-o','IdentitiesOnly=yes']:[]),cfg.host,`python3 -c "import base64;exec(base64.b64decode('${script}'))"`],{windowsHide:true,signal:request.signal});
+ const cp=spawn('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10','-o','SendEnv=-*','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=4',...(cfg.identity?['-i',cfg.identity,'-o','IdentitiesOnly=yes']:[]),cfg.host,`python3 -c "import base64;exec(base64.b64decode('${script}'))"`],{windowsHide:true,signal:request.signal});
  let error='',body='',done=false;
  const completion=new Promise(resolve=>{cp.on('error',e=>resolve(e.message));cp.on('close',code=>resolve(code===0?'':error||'SSH 通道关闭'))});
  cp.stderr.on('data',b=>{error=(error+b).slice(-800)});cp.stdin.on('error',()=>{});
- const lines=createInterface({input:cp.stdout});cp.stdin.end(JSON.stringify({session:'dsh-'+key+'-claude',project:cfg.project,text}));
+ const lines=createInterface({input:cp.stdout});cp.stdin.end(JSON.stringify({session:remoteSession,project:cfg.project,text}));
  try{
   yield {type:'block-start',index:0,blockType:'text'};
   for await(const line of lines){

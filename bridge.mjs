@@ -5,10 +5,12 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 import {createInterface} from 'node:readline/promises';
-const [action,host,project,identity='']=process.argv.slice(2);
+import {connectDesktop} from './desktop-runtime.mjs';
+import {desktopScope} from './desktop-state.mjs';
+const [action,host,project,identity='',sessionId='',desktopMode='']=process.argv.slice(2);
 if(!/^[a-zA-Z0-9_][a-zA-Z0-9_.@-]*$/.test(host)|| !/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,47}$/.test(project))throw Error('SSH 主机或工作区名称无效');
 if(identity && !existsSync(identity))throw Error('找不到指定的私钥文件');
-const sshOpts=[...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),'-o','ServerAliveInterval=20','-o','ServerAliveCountMax=3'];
+const sshOpts=[...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),'-o','SendEnv=-*','-o','ServerAliveInterval=20','-o','ServerAliveCountMax=3'];
 const quote=s=>"'"+s.replaceAll("'","'\\''")+"'";
 function run(exe,args,capture=false){
  const r=spawnSync(exe,args,{stdio:capture?['inherit','pipe','inherit']:'inherit',encoding:'utf8'});
@@ -17,7 +19,7 @@ function run(exe,args,capture=false){
  return capture?r.stdout.trim():'';
 }
 const ssh=(cmd,capture=false,tty=false)=>run('ssh',[...sshOpts,...(tty?['-tt']:[]),host,cmd],capture);
-const key=createHash('sha256').update(host+'\n'+project).digest('hex').slice(0,16);
+const key=desktopMode==='desktop'&&action==='image'?desktopScope(sessionId,host,project):createHash('sha256').update(host+'\n'+project).digest('hex').slice(0,16);
 const session='dsh-'+key;
 const wd='"$HOME/projects/'+project+'"';
 const prefix='set -e; umask 077; mkdir -p '+wd+'; cd '+wd+'; ';
@@ -25,6 +27,9 @@ const git=(...args)=>run('git',args,true);
 let rl;
 async function yes(msg){rl ??= createInterface({input:process.stdin,output:process.stdout}); return (await rl.question(msg+' [y/N] ')).trim().toLowerCase()==='y'}
 async function main(){
+ if(action==='claude' && desktopMode==='desktop'){
+  await connectDesktop({host,project,identity},sessionId);return;
+ }
  if(action==='sync'){
   const ui=spawnSync('powershell.exe',['-NoProfile','-STA','-File',fileURLToPath(new URL('./sync.ps1',import.meta.url))],{stdio:'inherit',env:{...process.env,DSH_SYNC_HOST:host,DSH_SYNC_PROJECT:project,DSH_SYNC_IDENTITY:identity}});
   if(ui.error||ui.status!==0)throw Error(ui.error?.message||'无法打开同步窗口');

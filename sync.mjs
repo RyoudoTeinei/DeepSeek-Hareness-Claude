@@ -1,9 +1,10 @@
 import {returnFiles} from './return-files.mjs';
+import {desktopScope,desktopDirectory,listDesktopRequests,decideDesktopRequest,readJson} from './desktop-state.mjs';
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,renameSync,readFileSync} from 'node:fs';
 import path from 'node:path';
-const {host,project,identity,action,sessionId,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
+const {host,project,identity,action,sessionId,desktopTools=false,requestId,approved,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
 function execute(exe,args,input){
  const r=spawnSync(exe,args,{encoding:'utf8',input,stdio:['pipe','pipe','pipe'],maxBuffer:32*1024*1024,timeout:120000,windowsHide:true,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
  if(r.error||r.status!==0)throw Error(r.error?.message||r.stderr.trim()||exe+' failed');
@@ -31,6 +32,15 @@ async function push(args){
  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error(err.trim()||'推送失败')))});
 }
 async function main(){
+ if(action==='desktop-list'||action==='desktop-decide'){
+  const directory=desktopDirectory(desktopScope(sessionId,host,project));
+  if(action==='desktop-decide')await decideDesktopRequest(directory,requestId,approved);
+  const connection=await readJson(path.join(directory,'connection.json'),{state:'disconnected'});
+  if(connection.state==='connected'){
+   try{process.kill(connection.pid,0)}catch{connection.state='disconnected'}
+  }
+  return {connection:connection.state,requests:await listDesktopRequests(directory)};
+ }
  if(action==='quota'||action==='quota-enable'){
   if(!/^[\w][\w.@-]*$/.test(host)||typeof identity!=='string')throw Error('SSH 配置无效');
   const args=['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=8',...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),host];
@@ -45,7 +55,11 @@ async function main(){
   if(!/^[\w.-]{1,180}$/.test(sessionId)|| !/^[\w][\w.@-]*$/.test(host)||!/^\w[\w-]{0,47}$/.test(project)||typeof identity!=='string')throw Error('会话绑定信息无效');
   const dir=path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');mkdirSync(dir,{recursive:true});
   const file=path.join(dir,createHash('sha256').update(sessionId).digest('hex')+'.json'),temp=file+'.'+randomUUID();
-  writeFileSync(temp,JSON.stringify({host,project,identity}),{mode:0o600});renameSync(temp,file);return true;
+  let previous;try{previous=JSON.parse(readFileSync(file,'utf8'))}catch{}
+  const same=previous?.host===host&&previous?.project===project;
+  const route={host,project,identity,localRoot:path.resolve('.'),desktopTools:desktopTools===true};
+  if(desktopTools===true && same && previous.activeTmuxSession){route.activeTmuxSession=previous.activeTmuxSession;route.desktopScope=previous.desktopScope}
+  writeFileSync(temp,JSON.stringify(route),{mode:0o600});renameSync(temp,file);return true;
  }
  if(['watch-status','watch-on','watch-off'].includes(action))return returnFiles(action,{host,project,identity});
  if(path.resolve(git('rev-parse','--show-toplevel').trim()).toLowerCase()!==path.resolve('.').toLowerCase())throw Error('请在 Git 仓库根目录打开工作区。');

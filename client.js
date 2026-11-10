@@ -92,6 +92,40 @@ window.__ModuleLoader__.load({
     h('output',{role:'status'},notice));
   }
 
+  function DesktopRequests({rpc,cfg}){
+   const [data,setData]=React.useState({connection:'disconnected',requests:[]});
+   const [error,setError]=React.useState('');
+   const busy=React.useRef(false);
+   React.useEffect(()=>{
+    let active=true;
+    async function refresh(){
+     if(busy.current)return;busy.current=true;
+     try{const result=await rpc({...cfg,action:'desktop-list'});if(active){setData(result);setError('')}}
+     catch(e){if(active)setError(String(e.message||e))}finally{busy.current=false}
+    }
+    void refresh();const timer=setInterval(refresh,4000);
+    return ()=>{active=false;clearInterval(timer)};
+   },[cfg.host,cfg.project]);
+   async function decide(id,approved){
+    if(busy.current)return;busy.current=true;
+    try{setData(await rpc({...cfg,action:'desktop-decide',requestId:id,approved}));setError('')}
+    catch(e){setError(String(e.message||e))}finally{busy.current=false}
+   }
+   const statuses={pending:'等待你确认',running:'正在处理',completed:'已完成',denied:'已拒绝',failed:'处理失败',expired:'已过期'};
+   return h('section',{className:'dsh-desktop-requests','aria-label':'本机操作请求'},
+    h('header',null,h('strong',null,'本机操作'),h('small',null,data.connection==='connected'?'已连接':'等待桌面模式连接')),
+    h('p',null,'Claude 可请求下载成果或用本机应用打开文档、图片。每次操作由你确认。网页预览请让 Claude 在服务器生成截图。'),
+    error&&h('output',{role:'alert'},error),
+    data.requests.length===0?h('small',null,'当前没有请求。连接后可告诉 Claude：“将项目中的报告下载到我的电脑”。'):null,
+    ...data.requests.slice(0,20).map(item=>h('article',{key:item.request.id},
+     h('div',null,h('b',null,item.request.action==='open_file'?'下载并打开':'下载成果'),h('small',null,statuses[item.status]||item.status)),
+     h('code',null,item.request.path),h('p',null,item.request.reason),
+     item.localFile&&h('p',{className:'desktop-destination'},'保存位置：'+item.localFile),
+     item.code&&h('p',null,({TRANSFER_FAILED:'文件传输失败，请检查文件是否存在后重新请求。',OPEN_FAILED:'文件已下载，本机应用未能打开。',LOCAL_UNAVAILABLE:'连接曾中断，请让 Claude 重新请求。'})[item.code]||item.code),
+     item.status==='pending'?h('footer',null,
+      h('button',{type:'button',onClick:()=>decide(item.request.id,false)},'拒绝'),
+      h('button',{type:'button',disabled:data.connection!=='connected',onClick:()=>decide(item.request.id,true)},item.request.action==='open_file'?'允许下载并打开':'允许下载')):null)));
+  }
   function Body({useTabInfo,launch,workspace,rpc}){
    const tab=useTabInfo ? useTabInfo().tab : null;
    const [cfg,set]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(workspace ? id+":"+workspace.workspaceId : id))||defaults()}catch{return defaults()}});
@@ -107,7 +141,9 @@ window.__ModuleLoader__.load({
    return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();void start('image')}}},
     h('small',null,'CLAUDE CODE  /  REMOTE'),h('h2',null,workspace?.title || 'Claude 工作区'),workspace && h('div',null,'本地文件夹　'+workspace.path),
     ...[['host','SSH 用户和主机（也可用本机 SSH 别名）'],['project','远程工作区（每人选自己的名字）'],['identity','本地私钥文件路径（使用 SSH 配置时留空）']].map(([k,t])=>h('label',{key:k},t,h('input',{style:{width:'100%'},value:cfg[k],onChange:e=>set({...cfg,[k]:e.target.value})}))),
+    h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.desktopTools,onChange:e=>set({...cfg,desktopTools:e.target.checked})}),' 桌面模式 · 为当前聊天建立独立 Claude 会话'),
     ...Object.entries(labels).map(([op,t])=>h('button',{key:op,onClick:()=>start(op)},t)),
+    cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
     h('p',null,'点击「文件同步」勾选本地文件并提交推送，或拉取远程提交。截图可粘贴到本面板，或点击上传按钮。'),h('output',null,msg));
   }
   function apply(ctx){
@@ -124,7 +160,7 @@ window.__ModuleLoader__.load({
       if(nav.params?.dshRemoteLaunch!==token)continue;
       const model=ctx.webTerminals.view(session,t.tabId,nav.address,nav.params.terminalId,ps.path);
       if(!model.state.getSnapshot()?.writable)continue;
-      const args=[op,cfg.host,cfg.project,cfg.identity];
+      const args=[op,cfg.host,cfg.project,cfg.identity,session,cfg.desktopTools?'desktop':''];
       model.rename('Claude · '+(op==='shell'?'服务器 Terminal':labels[op])+' · '+cfg.project);
       model.write('node (Resolve-Path '+quote(home+'/bridge.mjs')+') '+args.map(quote).join(' ')+'\r');
       if(op==='claude'){
@@ -181,6 +217,11 @@ window.__ModuleLoader__.load({
    let refresh=()=>{};
    const css=document.createElement('style');
    css.textContent=`
+    .desktop-mode-toggle{display:flex;align-items:center;gap:8px}.desktop-mode-toggle input{width:auto;margin:0}
+    .dsh-desktop-requests{border:1px solid #d9775766;border-radius:10px;padding:14px;display:grid;gap:10px}
+    .dsh-desktop-requests header,.dsh-desktop-requests article>div,.dsh-desktop-requests footer{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .dsh-desktop-requests p{font-size:12px;line-height:1.6;margin:4px 0}.dsh-desktop-requests article{border-top:1px solid #8884;padding-top:10px}
+    .dsh-desktop-requests code,.desktop-destination{display:block;overflow-wrap:anywhere;font-size:12px}.dsh-desktop-requests footer{justify-content:flex-end;margin-top:8px}
     .dsh-sync-pane{box-sizing:border-box;height:100%;min-height:0;display:flex;flex-direction:column;gap:8px;padding:14px;color:inherit;overflow:auto}
     .dsh-sync-pane header,.dsh-sync-pane footer,.sync-line{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.dsh-sync-pane header strong{flex:1;color:#d97757}.sync-meta,.dsh-sync-pane output{font-size:12px;overflow-wrap:anywhere}.dsh-sync-pane output{white-space:pre-wrap}
     .dsh-sync-pane button,.dsh-sync-pane>input{color:inherit;background:#8881;border:1px solid #8885;border-radius:6px;padding:5px 9px}.dsh-sync-pane button{cursor:pointer}.dsh-sync-pane button:disabled{opacity:.5}.dsh-sync-pane footer button:last-child{background:#d97757;color:#201611}
@@ -305,7 +346,7 @@ window.__ModuleLoader__.load({
    });
    ctx.effect(()=>ctx.sidebarRightTabs.register({id,kind,multiple:true,priority:'builtin',title:()=>'远程 Claude',guide:[{id:'new',order:21,title:()=>'远程 Claude',description:()=>'SSH、Git 和多模态工作区'}]}));
    for(const [name,component] of [['sidebar.right.tab.guide.entry',Guide],['sidebar.right.pane.tab',Body],['sidebar.right.pane.tab.title',()=>h('span',{className:'dsh-claude-tab'},'Claude 工作区')]]){
-    ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register({name,key:id,inject:session=>({rpc:(req,progress)=>syncRequest(ctx,session,req,progress),workspace:info(workspaces().find(w=>w.sessionIds.includes(session))),launch:(...args)=>launch(session,...args)})},component)));
+    ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register({name,key:id,inject:session=>({rpc:(req,progress)=>syncRequest(ctx,session,{...req,sessionId:session},progress),workspace:info(workspaces().find(w=>w.sessionIds.includes(session))),launch:(...args)=>launch(session,...args)})},component)));
    }
   }
   return {inject,apply};
