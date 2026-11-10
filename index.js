@@ -2,9 +2,8 @@ import {resumeSmartSync} from './smart-sync.mjs';
 import {outboundText} from './outbound.mjs';
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
-import path from 'node:path';
+import {readChatRoute} from './chat-session.mjs';
 const route='dsh-remote-claude';
 const followTerminal='claude-code';
 const models=[
@@ -19,7 +18,6 @@ function modelInfo(id){
  if(!entry)throw Error('此 Claude 型号未注册，请重新选择模型。');
  return entry;
 }
-const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
  resumeSmartSync();
@@ -36,20 +34,24 @@ export function apply(ctx){
   stream:request=>stream(request,modelInfo(request.model).id),
  }));
 }
-async function* stream(request,model){
+export async function* stream(request,model){
+ if(request.signal?.aborted)return;
  const id=request.sessionId;
  if(!id)throw Error('此模型仅用于已连接的 Claude 工作区会话。');
  let cfg;
- try{cfg=JSON.parse(readFileSync(path.join(routesDir(),createHash('sha256').update(id).digest('hex')+'.json'),'utf8'))}
+ try{cfg=readChatRoute(id)}
  catch{throw Error('请在当前工作区点一次「接入 Claude」以绑定左右会话。')}
  const text=outboundText(request.messages);
- const key=createHash('sha256').update(cfg.host+'\n'+cfg.project).digest('hex').slice(0,16);
  const script=readFileSync(new URL('./chat-peer.py',import.meta.url)).toString('base64');
- const cp=spawn('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10',...(cfg.identity?['-i',cfg.identity,'-o','IdentitiesOnly=yes']:[]),cfg.host,`python3 -c "import base64;exec(base64.b64decode('${script}'))"`],{windowsHide:true,signal:request.signal});
+ const cp=spawn('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=20','-o','ServerAliveCountMax=3',...(cfg.identity?['-i',cfg.identity,'-o','IdentitiesOnly=yes']:[]),cfg.host,`python3 -c "import base64;exec(base64.b64decode('${script}'))"`],{windowsHide:true});
  let error='',body='',done=false;
  const completion=new Promise(resolve=>{cp.on('error',e=>resolve(e.message));cp.on('close',code=>resolve(code===0?'':error||'SSH 通道关闭'))});
  cp.stderr.on('data',b=>{error=(error+b).slice(-800)});cp.stdin.on('error',()=>{});
- const lines=createInterface({input:cp.stdout});cp.stdin.end(JSON.stringify({session:'dsh-'+key+'-claude',project:cfg.project,text,model:model===followTerminal?null:model}));
+ const lines=createInterface({input:cp.stdout});
+ cp.stdin.write(JSON.stringify({session:cfg.tmuxSession,project:cfg.project,text,model:model===followTerminal?null:model})+'\n');
+ const cancel=()=>{if(!done&&!cp.stdin.destroyed)cp.stdin.write('{"action":"cancel"}\n')};
+ request.signal?.addEventListener('abort',cancel,{once:true});
+ if(request.signal?.aborted)cancel();
  try{
   yield {type:'block-start',index:0,blockType:'text'};
   for await(const line of lines){
@@ -60,5 +62,11 @@ async function* stream(request,model){
   const failure=await completion;if(failure||!done)throw Error(failure||'回复未完成，请查看右侧终端。');
   yield {type:'block-end',index:0,block:{type:'text',text:body}};
   yield {type:'finish',reason:{kind:'stop'}};
- }finally{lines.close();if(cp.exitCode===null)cp.kill()}
+ }finally{
+  if(request.signal?.aborted&&!done&&cp.exitCode===null){cancel();await completion}
+  request.signal?.removeEventListener('abort',cancel);
+  cp.stdin.end();
+  lines.close();
+  if(cp.exitCode===null)cp.kill();
+ }
 }

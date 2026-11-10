@@ -1,9 +1,9 @@
 import {smartSync} from './smart-sync.mjs';
 import {returnFiles} from './return-files.mjs';
 import {spawn,spawnSync} from 'node:child_process';
-import {createHash,randomUUID} from 'node:crypto';
-import {mkdirSync,writeFileSync,renameSync,readFileSync} from 'node:fs';
+import {readFileSync} from 'node:fs';
 import path from 'node:path';
+import {bindChatRoute} from './chat-session.mjs';
 const {host,project,identity,action,sessionId,syncSettings,smartSettings,diffPath,choice,expected,items,diffOffset,diffOnly,planToken,createRemote,badgeEntries,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
 function execute(exe,args,input){
  const r=spawnSync(exe,args,{encoding:'utf8',input,stdio:['pipe','pipe','pipe'],maxBuffer:32*1024*1024,timeout:120000,windowsHide:true,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
@@ -57,9 +57,7 @@ async function main(){
  }
  if(action==='bind-chat'){
   if(!/^[\w.-]{1,180}$/.test(sessionId)|| !/^[\w][\w.@-]*$/.test(host)||!/^\w[\w-]{0,47}$/.test(project)||typeof identity!=='string')throw Error('会话绑定信息无效');
-  const dir=path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');mkdirSync(dir,{recursive:true});
-  const file=path.join(dir,createHash('sha256').update(sessionId).digest('hex')+'.json'),temp=file+'.'+randomUUID();
-  writeFileSync(temp,JSON.stringify({host,project,identity}),{mode:0o600});renameSync(temp,file);return true;
+  return bindChatRoute(sessionId,{host,project,identity});
  }
  if(['watch-status','watch-on','watch-off','watch-apply'].includes(action))return returnFiles(action,{host,project,identity,syncSettings});
  if(path.resolve(git('rev-parse','--show-toplevel').trim()).toLowerCase()!==path.resolve('.').toLowerCase())throw Error('请在 Git 仓库根目录打开工作区。');

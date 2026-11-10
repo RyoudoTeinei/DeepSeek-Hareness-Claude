@@ -1,10 +1,11 @@
 {
   "name": "dsh-plugin-remote-claude",
-  "version": "0.4.11",
+  "version": "0.6.0",
   "type": "module",
   "main": "./index.js",
   "scripts": {
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "test:native": "node tests/native-executor.mjs"
   },
   "exports": {
     ".": "./index.js",

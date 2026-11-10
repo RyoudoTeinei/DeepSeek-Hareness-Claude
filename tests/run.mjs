@@ -11,11 +11,13 @@ for (const file of readdirSync(root).filter(file => /\.(?:mjs|js)$/.test(file)))
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-const settingsCheck = spawnSync(process.execPath, ['tests/sync-settings.mjs'], {
-  cwd: root, stdio: 'inherit', windowsHide: true,
-});
-if (settingsCheck.error) throw settingsCheck.error;
-if (settingsCheck.status !== 0) process.exit(settingsCheck.status ?? 1);
+for (const test of ['tests/sync-settings.mjs', 'tests/local-tools.mjs', 'tests/chat-session.mjs']) {
+  const result = spawnSync(process.execPath, [test], {
+    cwd: root, stdio: 'inherit', windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
 
 const candidates = process.platform === 'win32'
   ? [['python', []], ['py', ['-3']], ['python3', []]]

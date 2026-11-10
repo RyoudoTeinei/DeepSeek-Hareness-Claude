@@ -5,6 +5,11 @@ window.__ModuleLoader__.load({
   const id='dsh-plugin-remote-claude',kind='remote-claude-workbench';
   const quote=s=>"'"+s.replaceAll("'","''")+"'";
   const home='~/.dsh/profiles/desktop/node_modules/dsh-plugin-remote-claude';
+  function launchCommand(request,script=home+'/bridge.mjs'){
+   const bytes=new TextEncoder().encode(JSON.stringify(request));
+   let payload='';for(const byte of bytes)payload+=String.fromCharCode(byte);
+   return 'node (Resolve-Path '+quote(script)+') --launch '+quote(btoa(payload))+'\r';
+  }
   const labels={claude:'接入 Claude',shell:'服务器 Terminal',sync:'文件同步',image:'上传剪贴板图片'};
   const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace'];
   function Guide({useTabInfo}){const {tab}=useTabInfo();return h('button',{onClick:()=>tab.actions.openTab(kind,{replaceTab:true})},'远程 Claude 工作台')}
@@ -426,6 +431,10 @@ window.__ModuleLoader__.load({
      h('div',{className:'connection-fields'},field('host','SSH 主机','用户名@主机 或 SSH 别名'),field('project','远程目录','目录名')),
      h('details',null,h('summary',null,'SSH 私钥',cfg.identity&&h('small',null,'已设置')),
       field('identity','私钥路径','使用默认 SSH 配置时留空')),
+     workspace&&h('label',{className:'connection-local-tools'},
+      h('input',{type:'checkbox',checked:cfg.localTools!==false,disabled:!!opening,
+       onChange:e=>set({...cfg,localTools:e.target.checked})}),
+      '在本机工作区执行'),
      h('button',{type:'submit',className:'connection-primary',disabled:!!opening},
       opening==='claude'?'正在接入…':'接入 Claude'),
      h('div',{className:'connection-tools'},
@@ -439,7 +448,7 @@ window.__ModuleLoader__.load({
     const choices=await ctx.webTerminals.launchShells(session,new AbortController().signal);
     const ps=choices.shells.find(s=>/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(s.path));if(!ps)throw Error('当前 DSH 环境没有 Windows PowerShell 终端');
     const token=crypto.randomUUID();
-    if(op==='claude')await syncRequest(ctx,session,{...cfg,action:'bind-chat',sessionId:session});
+    const route=['claude','image'].includes(op)?await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'bind-chat',sessionId:session}):{};
     tab.actions.openTab('terminal',{params:{shellPath:ps.path,dshRemoteLaunch:token,dshRemoteOperation:op}});
     for(let n=0;n<150;n++){
      for(const t of ctx.sidebarRight.openTabs.getSnapshot()){
@@ -448,9 +457,14 @@ window.__ModuleLoader__.load({
       if(nav.params?.dshRemoteLaunch!==token)continue;
       const model=ctx.webTerminals.view(session,t.tabId,nav.address,nav.params.terminalId,ps.path);
       if(!model.state.getSnapshot()?.writable)continue;
-      const args=[op,cfg.host,cfg.project,cfg.identity];
+      const request={...route,action:op,host:cfg.host,project:cfg.project,identity:cfg.identity||''};
+      if(op==='claude'&&cfg.localTools!==false){
+       const workspace=workspaces().find(w=>w.sessionIds.includes(session));
+       if(!workspace?.path)throw Error('请先打开本地文件夹工作区');
+       request.localWorkspace=workspace.path;
+      }
       model.rename('Claude · '+(op==='shell'?'服务器 Terminal':labels[op])+' · '+cfg.project);
-      model.write('node (Resolve-Path '+quote(home+'/bridge.mjs')+') '+args.map(quote).join(' ')+'\r');
+      model.write(launchCommand(request));
       if(op==='claude'){
        const pane=document.querySelector('div[data-sidebar-right-tab="'+CSS.escape(t.tabId)+'"]');
        const target=pane && ctx.sidebarRight.focusedTarget(pane);
@@ -572,6 +586,8 @@ window.__ModuleLoader__.load({
     .connection-field input{box-sizing:border-box;min-width:0;width:100%;height:34px;padding:6px 9px;border:1px solid #8885;border-radius:6px;background:#0002;color:var(--text-primary,#eee);font:inherit;font-size:13px}
     .connection-card details[open]>summary{margin-bottom:8px}
     .connection-card summary small{margin-left:8px;color:#a5a9b0}
+    .connection-local-tools{display:flex;align-items:center;gap:7px;font-size:12px;color:#c5c8ce}
+    .connection-local-tools input{accent-color:#d97757}
     .connection-card button{min-height:34px;padding:6px 9px;border:1px solid #8885;border-radius:6px;background:#8881;color:inherit;font:inherit;cursor:pointer}
     .connection-card button:disabled{opacity:.55;cursor:default}
     .connection-card .connection-primary{min-height:38px;background:#d97757;color:#201611;border-color:transparent;font-weight:650}

@@ -1,4 +1,4 @@
-import sys, json, subprocess, time, re
+import sys, json, subprocess, time, re, threading
 from pathlib import Path
 
 def tmux(*args, data=None):
@@ -201,7 +201,13 @@ def select_model(pane, buffer_name, model):
 
 def run():
     import fcntl  # Only the remote Linux entry point needs the file lock.
-    req=json.load(sys.stdin)
+    req=json.loads(sys.stdin.readline())
+    cancelled=threading.Event()
+    def controls():
+        for line in sys.stdin:
+            if json.loads(line).get("action")=="cancel":
+                cancelled.set()
+    threading.Thread(target=controls,daemon=True).start()
     target=req["session"]+":"
     pane,pid,cmd=tmux("display-message","-p","-t",target,"#{pane_id} #{pane_pid} #{pane_current_command}").split()
     if cmd!="claude": raise ValueError("请先在右侧接入 Claude Code。")
@@ -225,8 +231,14 @@ def run():
     if not prompt.strip() or any(ord(c)<32 and c not in "\n\t" for c in prompt): raise ValueError("仅支持普通文本")
     if prompt.lstrip().startswith(("/","!")): raise ValueError("斜杠命令和 Shell 命令请在右侧终端执行。")
     name="dshchat-"+pid
+    if cancelled.is_set():
+        emit(cancelled=True,done=True)
+        return
     if req.get("model"):
         select_model(pane, name, req["model"])
+    if cancelled.is_set():
+        emit(cancelled=True,done=True)
+        return
     if not editor_empty(capture(pane)):
         raise ValueError("右侧输入框有草稿或正等待确认，请先处理。")
     current = json.loads(statefile.read_text())
@@ -240,8 +252,22 @@ def run():
     reader=TurnReader(prompt)
     start=time.monotonic()
     last_data=start
+    interrupted=False
     while time.monotonic()-start<1800:
         if not Path("/proc",pid).exists(): raise ValueError("右侧 Claude 进程已退出")
+        if cancelled.is_set():
+            current=json.loads(statefile.read_text())
+            if current.get("sessionId")!=session:
+                emit(cancelled=True,done=True)
+                return
+            if current.get("status")=="idle":
+                emit(cancelled=True,done=True)
+                return
+            if not interrupted:
+                tmux("send-keys","-t",pane,"Escape")
+                interrupted=True
+            time.sleep(.1)
+            continue
         if log.exists():
             with log.open("rb") as f:
                 f.seek(offset)
