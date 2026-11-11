@@ -1,10 +1,13 @@
 import {returnFiles} from './return-files.mjs';
 import {desktopScope,desktopDirectory,listDesktopRequests,decideDesktopRequest,readJson} from './desktop-state.mjs';
+import {atomicJson} from './desktop-state.mjs';
+import {prepareAgent} from './structured-chat.mjs';
+import {openDesktopFile} from './desktop-runtime.mjs';
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,renameSync,readFileSync} from 'node:fs';
 import path from 'node:path';
-const {host,project,identity,action,sessionId,desktopTools=false,requestId,approved,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
+const {host,project,identity,action,sessionId,desktopTools=false,structuredChat=false,remoteModel,turnId,artifactId,requestId,approved,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
 function execute(exe,args,input){
  const r=spawnSync(exe,args,{encoding:'utf8',input,stdio:['pipe','pipe','pipe'],maxBuffer:32*1024*1024,timeout:120000,windowsHide:true,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
  if(r.error||r.status!==0)throw Error(r.error?.message||r.stderr.trim()||exe+' failed');
@@ -32,6 +35,24 @@ async function push(args){
  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error(err.trim()||'推送失败')))});
 }
 async function main(){
+ if(['agent-connect','agent-status','agent-approve','agent-open'].includes(action)){
+  const scope=desktopScope(sessionId,host,project);
+  const directory=path.join(desktopDirectory(scope),'structured');
+  if(action==='agent-connect')await prepareAgent({host,project,identity},scope);
+  const state=await readJson(path.join(directory,'status.json'),{status:'idle',artifacts:[],events:[],approvals:[]});
+  if(action==='agent-approve'){
+   if(turnId!==state.turn||!state.approvals.some(item=>item.id===requestId&&item.status==='pending'&&item.source==='panel')||typeof approved!=='boolean')throw Error('审批已过期，请刷新');
+   const folder=path.join(directory,'approvals',state.turn);mkdirSync(folder,{recursive:true});
+   try{writeFileSync(path.join(folder,requestId+'.json'),JSON.stringify({approved}),{flag:'wx',mode:0o600})}catch(e){if(e.code!=='EEXIST')throw e}
+  }
+  if(action==='agent-open'){
+   const artifact=state.artifacts.find(item=>item.id===artifactId);
+   if(!artifact||!artifact.localFile||!path.resolve(artifact.localFile).startsWith(path.resolve(directory)+path.sep))throw Error('成果文件无效');
+   if(!/\.(pdf|docx|xlsx|pptx|png|jpe?g|webp|txt|md|csv)$/i.test(artifact.localFile))throw Error('此类型请从保存位置手动处理');
+   await openDesktopFile(artifact.localFile);
+  }
+  return state;
+ }
  if(action==='desktop-list'||action==='desktop-decide'){
   const directory=desktopDirectory(desktopScope(sessionId,host,project));
   if(action==='desktop-decide')await decideDesktopRequest(directory,requestId,approved);
@@ -57,7 +78,8 @@ async function main(){
   const file=path.join(dir,createHash('sha256').update(sessionId).digest('hex')+'.json'),temp=file+'.'+randomUUID();
   let previous;try{previous=JSON.parse(readFileSync(file,'utf8'))}catch{}
   const same=previous?.host===host&&previous?.project===project;
-  const route={host,project,identity,localRoot:path.resolve('.'),desktopTools:desktopTools===true};
+  if(remoteModel&&!['sonnet','opus','haiku'].includes(remoteModel))throw Error('模型设置无效');
+  const route={host,project,identity,localRoot:path.resolve('.'),desktopTools:desktopTools===true,structuredChat:structuredChat===true,remoteModel:remoteModel||''};
   if(desktopTools===true && same && previous.activeTmuxSession){route.activeTmuxSession=previous.activeTmuxSession;route.desktopScope=previous.desktopScope}
   writeFileSync(temp,JSON.stringify(route),{mode:0o600});renameSync(temp,file);return true;
  }

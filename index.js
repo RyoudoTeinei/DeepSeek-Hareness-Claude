@@ -4,25 +4,33 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import path from 'node:path';
+import {structuredStream} from './structured-chat.mjs';
 const route='dsh-remote-claude', model='claude-code';
-const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputModalities:['text']};
+const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputModalities:['text','image']};
 const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
- ctx.inject(['llm'],child=>child.llm.registerAdapter([route],{
+ ctx.inject(['llm','attachments','agents','approval','userQuestions'],child=>child.llm.registerAdapter([route],{
   providerInfo:()=>({id:route,name:'Claude Code'}),
   providerRetryPolicy:()=>({mode:'normal',maxRetries:0,retryableCodes:[],backoff:{}}),
   imageRequestPricing:()=>undefined,imageRequestTarget:()=>undefined,
   listModels:async()=>[info],resolveModel:async()=>info,
-  prepareCall:async()=>({model:info,stream}),stream
+  prepareCall:async()=>({model:info,stream:request=>stream(request,child)}),stream:request=>stream(request,child)
  }));
 }
-async function* stream(request){
+export async function* stream(request,host={}){
+ if(request.purpose==='session-title'){
+  const message=request.messages.find(item=>item.role==='user'&&item.source?.kind==='user');
+  const text=(message?.content||[]).filter(block=>block.type==='text'&&!block.text.startsWith('[File ')).map(block=>block.text).join(' ').trim().slice(0,28)||'Claude 远程任务';
+  yield {type:'block-start',index:0,blockType:'text'};yield {type:'text-delta',index:0,text};
+  yield {type:'block-end',index:0,block:{type:'text',text}};yield {type:'finish',reason:{kind:'stop'}};return;
+ }
  const id=request.sessionId;
  if(!id)throw Error('此模型仅用于已连接的 Claude 工作区会话。');
  let cfg;
  try{cfg=JSON.parse(readFileSync(path.join(routesDir(),createHash('sha256').update(id).digest('hex')+'.json'),'utf8'))}
  catch{throw Error('请在当前工作区点一次「接入 Claude」以绑定左右会话。')}
+ if(cfg.structuredChat){yield* structuredStream(request,cfg,host);return;}
  const text=outboundText(request.messages);
  const key=createHash('sha256').update(cfg.host+'\n'+cfg.project).digest('hex').slice(0,16);
  const remoteSession=cfg.activeTmuxSession || 'dsh-'+key+'-claude';

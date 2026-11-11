@@ -126,28 +126,49 @@ window.__ModuleLoader__.load({
       h('button',{type:'button',onClick:()=>decide(item.request.id,false)},'拒绝'),
       h('button',{type:'button',disabled:data.connection!=='connected',onClick:()=>decide(item.request.id,true)},item.request.action==='open_file'?'允许下载并打开':'允许下载')):null)));
   }
+  function AgentStatus({rpc,cfg}){
+   const [state,setState]=React.useState({status:'idle',events:[],artifacts:[],approvals:[]});
+   const [error,setError]=React.useState('');const busy=React.useRef(false);
+   React.useEffect(()=>{let active=true;async function refresh(){if(busy.current)return;busy.current=true;try{const next=await rpc({...cfg,action:'agent-status'});if(active){setState(next);setError('')}}catch(e){if(active)setError(e.message)}finally{busy.current=false}}void refresh();const timer=setInterval(refresh,2500);return()=>{active=false;clearInterval(timer)}},[cfg.host,cfg.project]);
+   async function act(action,extra){try{await rpc({...cfg,action,...extra});setState(await rpc({...cfg,action:'agent-status'}));setError('')}catch(e){setError(e.message)}}
+   const labels={idle:'等待消息',preparing:'准备附件',running:'服务器执行中',completed:'已完成',failed:'失败',cancelled:'已停止'};
+   return h('section',{className:'dsh-desktop-requests','aria-label':'远端任务和成果'},
+    h('header',null,h('strong',null,'任务与成果'),h('small',null,labels[state.status]||state.status)),
+    h('p',null,'在左侧添加附件并发送消息。需要返回文件时，告诉 Claude“生成后将成果回传”。'),
+    error&&h('output',{role:'alert'},error),state.error&&h('output',{role:'alert'},state.error),
+    ...state.approvals.filter(item=>item.status==='pending').map(item=>h('article',{key:item.id},h('b',null,'服务器操作 · '+item.tool),
+     h('pre',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:180,overflow:'auto'}},JSON.stringify(item.input,null,2)),
+     item.source==='panel'?h('footer',null,h('button',{onClick:()=>act('agent-approve',{requestId:item.id,turnId:state.turn,approved:false})},'拒绝'),h('button',{onClick:()=>act('agent-approve',{requestId:item.id,turnId:state.turn,approved:true})},'允许本次')):h('small',null,'请在 DSH 审批提示中确认'))),
+    ...state.events.slice(-6).map((item,index)=>h('p',{key:'e'+index},(item.status==='completed'?'✓ ':item.status==='failed'?'✕ ':'▶ ')+item.tool)),
+    ...state.artifacts.map(item=>h('article',{key:item.id},h('b',null,item.name),h('p',null,item.size+' 字节 · 已校验'),
+     h('code',null,item.localFile),h('button',{type:'button',onClick:()=>act('agent-open',{artifactId:item.id})},'打开成果'))));
+  }
   function Body({useTabInfo,launch,workspace,rpc}){
    const tab=useTabInfo ? useTabInfo().tab : null;
    const [cfg,set]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(workspace ? id+":"+workspace.workspaceId : id))||defaults()}catch{return defaults()}});
-   function defaults(){return {host:'',project:workspace?.remoteName || 'my-test',identity:''}}
+   function defaults(){return {host:'',project:workspace?.remoteName || 'my-test',identity:'',structuredChat:true}}
    const [msg,notify]=React.useState('');
    const [syncOpen,showSync]=React.useState(false);
    if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,back:()=>showSync(false),terminal:()=>tab.actions.openTab('terminal',{})});
    async function start(op){
     try{if(!/^[\w][\w.@-]*$/.test(cfg.host)||!/^\w[\w-]{0,47}$/.test(cfg.project)||/[\r\n\x00]/.test(cfg.identity))throw Error('请检查主机、工作区名和私钥路径');
-     localStorage.setItem(workspace ? id+":"+workspace.workspaceId : id,JSON.stringify(cfg));if(op==='sync'){showSync(true);return}notify('正在打开终端…');await launch(tab,op,cfg);notify('终端已打开');
+     localStorage.setItem(workspace ? id+":"+workspace.workspaceId : id,JSON.stringify(cfg));if(op==='sync'){showSync(true);return}notify('正在连接…');await launch(tab,op,cfg);notify(op==='claude'&&cfg.structuredChat?'已连接，可以在左侧发送消息和附件。':'终端已打开');
     }catch(e){notify(String(e.message||e))}
    }
-   return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();void start('image')}}},
+   return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify('请将图片粘贴到左侧聊天输入框后发送。');else void start('image')}}},
     h('small',null,'CLAUDE CODE  /  REMOTE'),h('h2',null,workspace?.title || 'Claude 工作区'),workspace && h('div',null,'本地文件夹　'+workspace.path),
     ...[['host','SSH 用户和主机（也可用本机 SSH 别名）'],['project','远程工作区（每人选自己的名字）'],['identity','本地私钥文件路径（使用 SSH 配置时留空）']].map(([k,t])=>h('label',{key:k},t,h('input',{style:{width:'100%'},value:cfg[k],onChange:e=>set({...cfg,[k]:e.target.value})}))),
-    h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.desktopTools,onChange:e=>set({...cfg,desktopTools:e.target.checked})}),' 桌面模式 · 为当前聊天建立独立 Claude 会话'),
-    ...Object.entries(labels).map(([op,t])=>h('button',{key:op,onClick:()=>start(op)},t)),
-    cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
+    h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.structuredChat,onChange:e=>set({...cfg,structuredChat:e.target.checked})}),' 结构化聊天 · 自动上传附件并回传成果'),
+    cfg.structuredChat&&h('label',null,'远端模型',h('select',{value:cfg.remoteModel||'',onChange:e=>set({...cfg,remoteModel:e.target.value})},...['','sonnet','opus','haiku'].map(value=>h('option',{key:value,value},value||'服务器默认')))),
+    !cfg.structuredChat&&h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.desktopTools,onChange:e=>set({...cfg,desktopTools:e.target.checked})}),' 桌面模式 · 为当前聊天建立独立 Claude 会话'),
+    ...Object.entries(labels).filter(([op])=>!cfg.structuredChat||op!=='image').map(([op,t])=>h('button',{key:op,onClick:()=>start(op)},t)),
+    cfg.structuredChat&&cfg.host&&h(AgentStatus,{rpc,cfg}),
+    !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
     h('p',null,'点击「文件同步」勾选本地文件并提交推送，或拉取远程提交。截图可粘贴到本面板，或点击上传按钮。'),h('output',null,msg));
   }
   function apply(ctx){
    async function launch(session,tab,op,cfg){
+    if(op==='claude'&&cfg.structuredChat){await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'bind-chat',sessionId:session});await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'agent-connect',sessionId:session});return;}
     const choices=await ctx.webTerminals.launchShells(session,new AbortController().signal);
     const ps=choices.shells.find(s=>/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(s.path));if(!ps)throw Error('当前 DSH 环境没有 Windows PowerShell 终端');
     const token=crypto.randomUUID();
