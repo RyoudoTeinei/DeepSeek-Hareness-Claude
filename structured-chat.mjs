@@ -209,7 +209,7 @@ export async function* structuredStream(request,cfg,host={}){
         }
         if(frame.type==='artifact_ready'){
           const record=frame.artifact;
-          if(!/^[a-f0-9]{32}$/.test(record.id)||!Number.isSafeInteger(record.size)||record.size<0||record.size>MAX_BYTES)throw Error('成果信息无效');
+          if(!/^[a-f0-9]{32}$/.test(record.id)||!/^[a-f0-9]{64}$/.test(record.sha256)||typeof record.name!=='string'||!Number.isSafeInteger(record.size)||record.size<0||record.size>MAX_BYTES)throw Error('成果信息无效');
           const folder=path.join(directory,'received',turn,record.id);await mkdir(folder,{recursive:true});
           const destination=path.join(folder,SAFE_NAME(record.name));
           const download=connect(cfg,'python3 '+remoteScript+' download '+scope+' '+turn+' '+record.id,request.signal);
@@ -222,6 +222,8 @@ export async function* structuredStream(request,cfg,host={}){
             let valid=false;try{valid=createHash('sha256').update(await readFile(destination)).digest('hex')===record.sha256;}catch{}
             if(valid){for await(const _ of converted()){};}else await receiveArtifact(converted(),destination);
             await download.done;
+            const verified=await readFile(destination);
+            if(verified.length!==record.size||createHash('sha256').update(verified).digest('hex')!==record.sha256)throw Error('成果与发布记录不一致');
           }finally{clearTimeout(downloadTimer);frames.close();if(download.child.exitCode===null)download.child.kill();}
           if(!artifacts.some(item=>item.id===record.id))artifacts.push({...record,localFile:destination});
           if(artifacts.length>50)artifacts.splice(0,artifacts.length-50);
