@@ -3,7 +3,7 @@ import {readdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const desktopTests = spawnSync(process.execPath, ['--test', 'tests/desktop.test.mjs','tests/structured.test.mjs'], {cwd:root,stdio:'inherit',windowsHide:true});
+const desktopTests = spawnSync(process.execPath, ['--test', 'tests/desktop.test.mjs','tests/structured.test.mjs','tests/launch-wire.test.mjs'], {cwd:root,stdio:'inherit',windowsHide:true});
 if (desktopTests.error) throw desktopTests.error;
 if (desktopTests.status !== 0) process.exit(desktopTests.status ?? 1);
 for (const file of readdirSync(root).filter(file => /\.(?:mjs|js)$/.test(file))) {

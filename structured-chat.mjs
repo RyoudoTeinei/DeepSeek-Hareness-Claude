@@ -43,14 +43,16 @@ async function writeChunk(stream,chunk){if(!stream.write(chunk))await once(strea
 
 export async function prepareAgent(cfg,scope,signal){
   const source=await readFile(new URL('./structured-peer.py',import.meta.url),'utf8');
+  const watcher=await readFile(new URL('./server-watch.py',import.meta.url),'utf8');
   const bootstrap=`import json,sys,os,pathlib,uuid
 os.umask(0o077)
 p=json.load(sys.stdin)
 root=pathlib.Path.home()/'.local/state/dsh-remote/structured-v1'
 root.mkdir(parents=True,exist_ok=True)
-target=root/'structured-peer.py'
-if not target.exists() or target.read_text()!=p['source']:
- temp=root/('peer-'+uuid.uuid4().hex+'.tmp');temp.write_text(p['source']);temp.replace(target)
+for name,contents in [('structured-peer.py',p['source']),('server-watch.py',p['watcher'])]:
+ target=root/name
+ if not target.exists() or target.read_text()!=contents:
+  temp=root/('source-'+uuid.uuid4().hex+'.tmp');temp.write_text(contents,encoding='utf-8');temp.replace(target)
 state=root/'sessions'/p['scope'];state.mkdir(parents=True,exist_ok=True)
 binding=state/'binding.json'
 if binding.exists() and json.loads(binding.read_text())['project']!=p['project']:raise ValueError('Session binding mismatch')
@@ -58,7 +60,7 @@ temp=state/('binding-'+uuid.uuid4().hex+'.tmp');temp.write_text(json.dumps({'pro
 print('DSH_AGENT_READY')`;
   const connection=connect(cfg,'python3 -c '+quote(bootstrap),signal);
   let stdout='';connection.child.stdout.on('data',data=>{stdout=(stdout+data).slice(-1024)});
-  connection.child.stdin.end(JSON.stringify({scope,project:cfg.project,source}));
+  connection.child.stdin.end(JSON.stringify({scope,project:cfg.project,source,watcher}));
   const timer=setTimeout(()=>connection.child.kill(),30_000);
   try{await connection.done;if(!stdout.includes('DSH_AGENT_READY'))throw Error('结构化会话服务未就绪');}
   finally{clearTimeout(timer);}
@@ -158,11 +160,12 @@ export async function* structuredStream(request,cfg,host={}){
   let writes=Promise.resolve();
   const persist=()=>{const snapshot=structuredClone(state);writes=writes.then(()=>atomicJson(path.join(directory,'status.json'),snapshot));return writes;};
   async function decide(event){
-    if(host.decide)return host.decide(event,request);
+    if(Object.hasOwn(host,'decide')&&typeof host.decide==='function')return host.decide(event,request);
     const entry={id:createHash('sha256').update(event.request_id).digest('hex').slice(0,32),tool:event.request?.tool_name||'tool',input:event.request?.input||{},status:'pending',source:'native'};
     state.approvals.push(entry);await persist();
     let result;
-    try{result=await permission(host,{...request,signal:controlSignal},event);}catch{result={behavior:'deny',message:'Approval cancelled'};}
+    try{result=await permission(host,{...request,signal:controlSignal},event);}
+    catch{result=controlSignal.aborted?{behavior:'deny',message:'Approval cancelled'}:null;}
     if(result===null){
       entry.source='panel';await persist();
       const deadline=Date.now()+300_000;

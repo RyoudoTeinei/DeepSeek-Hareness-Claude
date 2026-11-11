@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-remote-claude",
-  "version": "0.3.1-structured.1",
+  "version": "0.3.1-structured.2",
   "type": "module",
   "main": "./index.js",
   "scripts": {

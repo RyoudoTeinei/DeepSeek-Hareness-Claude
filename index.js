@@ -10,13 +10,15 @@ const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputM
 const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
- ctx.inject(['llm','attachments','agents','approval','userQuestions'],child=>child.llm.registerAdapter([route],{
+ ctx.inject(['llm','attachments','agents','approval','userQuestions'],child=>{
+ const services={llm:child.llm,attachments:child.attachments,agents:child.agents,approval:child.approval,userQuestions:child.userQuestions};
+ child.llm.registerAdapter([route],{
   providerInfo:()=>({id:route,name:'Claude Code'}),
   providerRetryPolicy:()=>({mode:'normal',maxRetries:0,retryableCodes:[],backoff:{}}),
   imageRequestPricing:()=>undefined,imageRequestTarget:()=>undefined,
   listModels:async()=>[info],resolveModel:async()=>info,
-  prepareCall:async()=>({model:info,stream:request=>stream(request,child)}),stream:request=>stream(request,child)
- }));
+  prepareCall:async()=>({model:info,stream:request=>stream(request,services)}),stream:request=>stream(request,services)
+ });});
 }
 export async function* stream(request,host={}){
  if(request.purpose==='session-title'){

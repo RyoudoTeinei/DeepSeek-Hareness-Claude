@@ -7,7 +7,8 @@ import {createHash,randomUUID} from 'node:crypto';
 import {createInterface} from 'node:readline/promises';
 import {connectDesktop} from './desktop-runtime.mjs';
 import {desktopScope} from './desktop-state.mjs';
-const [action,host,project,identity='',sessionId='',desktopMode='']=process.argv.slice(2);
+import {decodeLaunch} from './launch-wire.mjs';
+const {action,host,project,identity='',sessionId='',desktopMode=''}=decodeLaunch(process.argv.slice(2));
 if(!/^[a-zA-Z0-9_][a-zA-Z0-9_.@-]*$/.test(host)|| !/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,47}$/.test(project))throw Error('SSH 主机或工作区名称无效');
 if(identity && !existsSync(identity))throw Error('找不到指定的私钥文件');
 const sshOpts=[...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),'-o','SendEnv=-*','-o','ServerAliveInterval=20','-o','ServerAliveCountMax=3'];
@@ -27,6 +28,10 @@ const git=(...args)=>run('git',args,true);
 let rl;
 async function yes(msg){rl ??= createInterface({input:process.stdin,output:process.stdout}); return (await rl.question(msg+' [y/N] ')).trim().toLowerCase()==='y'}
 async function main(){
+ if(action==='monitor'){
+  const scope=desktopScope(sessionId,host,project);
+  ssh('python3 -u "$HOME/.local/state/dsh-remote/structured-v1/server-watch.py" '+scope,false,true);return;
+ }
  if(action==='claude' && desktopMode==='desktop'){
   await connectDesktop({host,project,identity},sessionId);return;
  }

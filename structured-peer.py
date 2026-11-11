@@ -277,6 +277,8 @@ def run_turn(directory, scope):
         args+=['--max-budget-usd',str(budget)]
     events=queue.Queue()
     child=subprocess.Popen(args,cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    running={'turn':turn,'pid':child.pid,'status':'运行中','sessionId':session_id}
+    save(directory/'current-turn.json',running)
     def pump(stream,kind):
         for line in iter(stream.readline,b''):
             events.put((kind,line))
@@ -345,12 +347,17 @@ def run_turn(directory, scope):
                     if value.get('type')=='cancel':cancel()
                     elif value.get('type')=='control_response' and value.get('response',{}).get('request_id') in pending:
                         pending.remove(value['response']['request_id']);send(value)
+                        record({'type':'approval_result','request_id':value['response']['request_id'],'behavior':value['response'].get('response',{}).get('behavior')})
+                        running['status']='等待审批' if pending else '运行中';save(directory/'current-turn.json',running)
+            elif kind=='stderr' and line:
+                record({'type':'stderr','text':line.decode('utf-8',errors='replace')[:4096]})
             elif kind=='claude':
                 if line is None:
                     stdout_ended=True
                 else:
                     event=json.loads(line)
-                    if event.get('type')=='control_request':pending.add(event['request_id'])
+                    if event.get('type')=='control_request':
+                        pending.add(event['request_id']);running['status']='等待审批';save(directory/'current-turn.json',running)
                     if event.get('type')=='system' and event.get('subtype')=='init':
                         save(session_file,{'id':event.get('session_id',session_id),'started':True})
                     record({'type':'claude_event','event':event})
@@ -368,6 +375,8 @@ def run_turn(directory, scope):
         save(folder/'complete.json',{'finished':terminal,'cancelled':cancelled})
         record({'type':'broker_done','cancelled':cancelled})
     finally:
+        running['status']='已停止' if cancelled else ('已完成' if terminal else '已中断')
+        save(directory/'current-turn.json',running)
         log_file.close()
         if child.poll() is None:
             child.stdin.close()

@@ -5,7 +5,11 @@ window.__ModuleLoader__.load({
   const id='dsh-plugin-remote-claude',kind='remote-claude-workbench';
   const quote=s=>"'"+s.replaceAll("'","''")+"'";
   const home='~/.dsh/profiles/desktop/node_modules/dsh-plugin-remote-claude';
-  const labels={claude:'接入 Claude',shell:'服务器 Terminal',sync:'文件同步 · 选择文件 / 推送 / 拉取',image:'上传剪贴板图片'};
+  function launchCommand(request,script=home+'/bridge.mjs'){
+   const bytes=new TextEncoder().encode(JSON.stringify(request));let encoded='';for(const byte of bytes)encoded+=String.fromCharCode(byte);
+   return 'node (Resolve-Path '+quote(script)+') --launch '+quote(btoa(encoded))+'\r';
+  }
+  const labels={claude:'接入 Claude',monitor:'服务器运行窗口',shell:'服务器 Terminal',sync:'文件同步 · 选择文件 / 推送 / 拉取',image:'上传剪贴板图片'};
   const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace'];
   function Guide({useTabInfo}){const {tab}=useTabInfo();return h('button',{onClick:()=>tab.actions.openTab(kind,{replaceTab:true})},'远程 Claude 工作台')}
   async function syncRequest(ctx,session,request,progress){
@@ -152,7 +156,7 @@ window.__ModuleLoader__.load({
    if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,back:()=>showSync(false),terminal:()=>tab.actions.openTab('terminal',{})});
    async function start(op){
     try{if(!/^[\w][\w.@-]*$/.test(cfg.host)||!/^\w[\w-]{0,47}$/.test(cfg.project)||/[\r\n\x00]/.test(cfg.identity))throw Error('请检查主机、工作区名和私钥路径');
-     localStorage.setItem(workspace ? id+":"+workspace.workspaceId : id,JSON.stringify(cfg));if(op==='sync'){showSync(true);return}notify('正在连接…');await launch(tab,op,cfg);notify(op==='claude'&&cfg.structuredChat?'已连接，可以在左侧发送消息和附件。':'终端已打开');
+     localStorage.setItem(workspace ? id+":"+workspace.workspaceId : id,JSON.stringify(cfg));if(op==='sync'){showSync(true);return}notify('正在连接…');await launch(tab,op,cfg);notify(op==='claude'&&cfg.structuredChat?'已连接，右侧运行窗口已打开。可在左侧发送消息和附件。':'终端已打开');
     }catch(e){notify(String(e.message||e))}
    }
    return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify('请将图片粘贴到左侧聊天输入框后发送。');else void start('image')}}},
@@ -161,14 +165,15 @@ window.__ModuleLoader__.load({
     h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.structuredChat,onChange:e=>set({...cfg,structuredChat:e.target.checked})}),' 结构化聊天 · 自动上传附件并回传成果'),
     cfg.structuredChat&&h('label',null,'远端模型',h('select',{value:cfg.remoteModel||'',onChange:e=>set({...cfg,remoteModel:e.target.value})},...['','sonnet','opus','haiku'].map(value=>h('option',{key:value,value},value||'服务器默认')))),
     !cfg.structuredChat&&h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.desktopTools,onChange:e=>set({...cfg,desktopTools:e.target.checked})}),' 桌面模式 · 为当前聊天建立独立 Claude 会话'),
-    ...Object.entries(labels).filter(([op])=>!cfg.structuredChat||op!=='image').map(([op,t])=>h('button',{key:op,onClick:()=>start(op)},t)),
+    ...Object.entries(labels).filter(([op])=>cfg.structuredChat?op!=='image':op!=='monitor').map(([op,t])=>h('button',{key:op,onClick:()=>start(op)},t)),
     cfg.structuredChat&&cfg.host&&h(AgentStatus,{rpc,cfg}),
     !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
     h('p',null,'点击「文件同步」勾选本地文件并提交推送，或拉取远程提交。截图可粘贴到本面板，或点击上传按钮。'),h('output',null,msg));
   }
   function apply(ctx){
    async function launch(session,tab,op,cfg){
-    if(op==='claude'&&cfg.structuredChat){await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'bind-chat',sessionId:session});await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'agent-connect',sessionId:session});return;}
+    if(op==='claude'&&cfg.structuredChat){await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'bind-chat',sessionId:session});await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'agent-connect',sessionId:session});op='monitor';}
+    else if(op==='monitor')await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'agent-connect',sessionId:session});
     const choices=await ctx.webTerminals.launchShells(session,new AbortController().signal);
     const ps=choices.shells.find(s=>/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(s.path));if(!ps)throw Error('当前 DSH 环境没有 Windows PowerShell 终端');
     const token=crypto.randomUUID();
@@ -181,10 +186,9 @@ window.__ModuleLoader__.load({
       if(nav.params?.dshRemoteLaunch!==token)continue;
       const model=ctx.webTerminals.view(session,t.tabId,nav.address,nav.params.terminalId,ps.path);
       if(!model.state.getSnapshot()?.writable)continue;
-      const args=[op,cfg.host,cfg.project,cfg.identity,session,cfg.desktopTools?'desktop':''];
       model.rename('Claude · '+(op==='shell'?'服务器 Terminal':labels[op])+' · '+cfg.project);
-      model.write('node (Resolve-Path '+quote(home+'/bridge.mjs')+') '+args.map(quote).join(' ')+'\r');
-      if(op==='claude'){
+      model.write(launchCommand({action:op,host:cfg.host,project:cfg.project,identity:cfg.identity||'',sessionId:session,desktopMode:cfg.desktopTools?'desktop':''}));
+      if(op==='claude'||op==='monitor'){
        const pane=document.querySelector('div[data-sidebar-right-tab="'+CSS.escape(t.tabId)+'"]');
        const target=pane && ctx.sidebarRight.focusedTarget(pane);
        if(target?.sessionId===session && pane.closest('[data-sidebar-right-panel="fullscreen"]'))ctx.sidebarRight.toggleFullscreen(target);
