@@ -19,7 +19,13 @@ https://github.com/RyoudoTeinei/DeepSeek-Hareness-Claude.git#feature/cloud-cc-lo
 
 地址中 `#` 后的内容选择 Git 分支。复制浏览器地址栏的 `/tree/feature/cloud-cc-local-vm` 会被这个版本的安装器拒绝。只填仓库根地址会安装默认分支 `main`。两个版本使用同一个包名 `dsh-plugin-remote-claude`，一个 DSH profile 只选择其中一条路线。
 
-**以后更新。** DSH 会把这次解析出的具体提交写入 `pnpm-lock.yaml`。重启 DSH 继续使用锁定提交。分支来源没有自动追新按钮。需要升级时，在插件管理器移除这个插件，再用上面同一个带 `#` 的地址安装和启用。安装后可在 desktop profile 的 `package.json` 中核对 `dsh-plugin-remote-claude` 的来源，结尾应为 `#feature/cloud-cc-local-vm`。如果需要复现某一版，可以把 `#` 后的分支名换成该分支上特定提交的完整 40 位 SHA。
+**以后更新。** 从上述分支地址安装后，完成当前任务、从托盘退出 DSH，再在 PowerShell 运行下面这条命令。它按已保存的分支刷新插件，然后重新打开 DSH 即可。已在独立 profile 验证它能获取分支的新提交，即使两次提交的包版本号相同。
+
+```powershell
+dsh plugin --profile desktop up dsh-plugin-remote-claude
+```
+
+普通重启沿用 `pnpm-lock.yaml` 锁定的提交。如果只想用图形界面，可在插件管理器移除该插件，再用同一个带 `#` 的地址安装并启用。在 desktop profile 的 `package.json` 中，`dsh-plugin-remote-claude` 的来源应以 `#feature/cloud-cc-local-vm` 结尾。若需要固定一个可复现的快照，可以把分支名换成该分支上特定提交的完整 40 位 SHA。
 
 **从以前的本地安装迁移。** 如果来源是 `link:...`，DSH 当前加载的是那个本地目录。想改由 GitHub 提供版本，可在完成当前任务、从托盘退出 DSH 后运行一次下列 PowerShell 命令，再打开 DSH 核对插件已启用。这条命令已在临时 profile 验证能把同名包从 `link:` 切换到 VM 分支。
 
