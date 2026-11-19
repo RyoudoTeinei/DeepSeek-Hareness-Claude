@@ -9,13 +9,25 @@
 
 两条路线独立维护，版本号分别演进。本分支保留云端 CC 的 Agent、Skill 和会话上下文；Windows 上的日常 CC、Claude Desktop 不作为执行器使用。
 
-## 本分支快速开始
+## 在 DSH 安装和更新 VM 版
 
-1. 检出 `feature/cloud-cc-local-vm`，将这个检出的插件目录配置为 DSH 的本地插件来源。直接添加仓库默认分支会得到另一条代码线。
-2. 按 [虚拟机准备说明](docs/vm-setup.md) 配置独立执行环境。已有本分支执行器的用户不需要重新创建磁盘。
-3. 重启 DSH，在本地项目的新聊天中打开「Claude 工作台」，配置 SSH 主机与远程工作区，点击「接入 Claude」。
-4. 在左侧选择 `Claude Code · 远程工作区`。消息与附件从左侧发送，权限确认和斜杠命令在右侧真实 CC 终端处理。
-5. 多个项目和聊天可以同时连接。同一个项目的聊天共享原文件夹，修改立即保存；聊天上下文、工具进程和临时目录独立，同时修改同一文件仍需协调。
+在 Windows DSH 的「插件 → 添加插件」中，粘贴下面一整行，选择安装并启用。已在 DSH `0.2.2-rc.5` 的独立 profile 实装验证。
+
+```text
+https://github.com/RyoudoTeinei/DeepSeek-Hareness-Claude.git#feature/cloud-cc-local-vm
+```
+
+地址中 `#` 后的内容选择 Git 分支。复制浏览器地址栏的 `/tree/feature/cloud-cc-local-vm` 会被这个版本的安装器拒绝。只填仓库根地址会安装默认分支 `main`。两个版本使用同一个包名 `dsh-plugin-remote-claude`，一个 DSH profile 只选择其中一条路线。
+
+**以后更新。** DSH 会把这次解析出的具体提交写入 `pnpm-lock.yaml`。重启 DSH 继续使用锁定提交。分支来源没有自动追新按钮。需要升级时，在插件管理器移除这个插件，再用上面同一个带 `#` 的地址安装和启用。安装后可在 desktop profile 的 `package.json` 中核对 `dsh-plugin-remote-claude` 的来源，结尾应为 `#feature/cloud-cc-local-vm`。如果需要复现某一版，可以把 `#` 后的分支名换成该分支上特定提交的完整 40 位 SHA。
+
+**从以前的本地安装迁移。** 如果来源是 `link:...`，DSH 当前加载的是那个本地目录。想改由 GitHub 提供版本，可在完成当前任务、从托盘退出 DSH 后运行一次下列 PowerShell 命令，再打开 DSH 核对插件已启用。这条命令已在临时 profile 验证能把同名包从 `link:` 切换到 VM 分支。
+
+```powershell
+dsh plugin --profile desktop add 'https://github.com/RyoudoTeinei/DeepSeek-Hareness-Claude.git#feature/cloud-cc-local-vm'
+```
+
+**首次使用。** 新电脑还需按[虚拟机准备说明](docs/vm-setup.md)配置独立执行环境。已有执行器保留原注册和磁盘即可。在本地项目的新聊天中打开「Claude 工作台」，配置 SSH 主机与远程工作区，点击「接入 Claude」，在左侧选择 `Claude Code · 远程工作区`。
 
 这是已在专用 Windows / QEMU / Linux VPS 环境验证的预览分支，尚未提供通用一键安装。仓库包含插件、测试及 VM 准备脚本，不包含虚拟磁盘、CC/QEMU 二进制、密钥、登录配置或个人会话数据。
 
