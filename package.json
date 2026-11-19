@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-remote-claude",
-  "version": "0.4.0-vm.7",
+  "version": "0.4.0-vm.8",
   "type": "module",
   "main": "./index.js",
   "scripts": {
@@ -16,6 +16,7 @@
     "client": {
       "platform": "web",
       "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-api-terminal-controller",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-sidebar-terminal",

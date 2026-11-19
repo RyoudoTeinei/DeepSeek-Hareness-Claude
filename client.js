@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
    return 'node (Resolve-Path '+quote(script)+') --launch '+quote(btoa(encoded))+'\r';
   }
   const labels={claude:'接入 Claude',shell:'服务器终端',sync:'文件同步 · 选择文件 / 推送 / 拉取',image:'上传剪贴板图片'};
-  const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace'];
+  const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace','sessions'];
   // DSH does not expose its xterm instance. Keep native selection in the existing
   // renderer, and send wheel reports explicitly through the supported input API.
   function installTerminalMouse(root,getModel){
@@ -60,7 +60,44 @@ window.__ModuleLoader__.load({
     root.removeEventListener('wheel',wheel,true);root.removeEventListener('mousedown',down,true);root.removeEventListener('keydown',key,true);
    }};
   }
-  const WORKBENCH_CSS=`.dsh-claude-workspace,.dsh-sync-pane,.dsh-desktop-requests,[data-dsh-claude-control],.dsh-quota{
+  // A sidebar row can belong to a chat which has never been opened in this tab.
+  // Read the published model selection, including changes for the next turn.
+  function sidebarModelMark(entry){
+   const selection=entry?.projectionValues?.modelSelection;
+   const route=selection?.next??selection?.lastUsed;
+   if(!route)return null;
+   const provider=String(route.provider||'').toLowerCase(),model=String(route.model||'').toLowerCase();
+   if(provider==='dsh-remote-claude'||/^claude-code(?:$|[-:])/.test(provider))return 'Claude';
+   if(/^deepseek(?:$|[-_:/])/.test(model))return 'DeepSeek';
+   if(/^claude(?:$|[-_:/])/.test(model))return 'Claude';
+   if(/^(?:dsh-llm-)?deepseek(?:$|[-_:/])/.test(provider))return 'DeepSeek';
+   return null;
+  }
+  function SessionProviderMark({sessionId,list}){
+   const subscribe=React.useCallback(fn=>list.subscribe(fn),[list]);
+   const read=React.useCallback(()=>sidebarModelMark(list.getSnapshot()?.byId?.[sessionId]),[list,sessionId]);
+   const name=React.useSyncExternalStore(subscribe,read,read);
+   return name?h('span',{className:'cw-provider-mark','data-provider':name,title:'会话模型：'+name},name):null;
+  }
+  const WORKBENCH_CSS=`
+[data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]),[data-row-key^="session:"]:has(.cw-provider-mark[data-provider=Claude]){
+ --cw-sidebar-ink:#9f482e;--cw-sidebar-edge:#c76c4c;--cw-sidebar-wash:#f5e6dd;--cw-sidebar-hover:#f9eee7;
+}
+body[data-ds-dark-theme] :is([data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]),[data-row-key^="session:"]:has(.cw-provider-mark[data-provider=Claude])){
+ --cw-sidebar-ink:#edb398;--cw-sidebar-edge:#cb896c;--cw-sidebar-wash:#49342e;--cw-sidebar-hover:#322928;
+}
+[data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]) :is([class*="_folder"],[class*="_projectText"]),
+[data-row-key^="workspace:"]>[data-dsh-claude-control=open]{color:var(--cw-sidebar-ink)}
+[data-row-key^="workspace:"]>[data-dsh-claude-control=open]{display:inline-flex;align-items:center;gap:3px;border-radius:5px;padding:2px 5px;font-size:11px;font-weight:550;line-height:16px;opacity:1}
+[data-row-key^="workspace:"]>[data-dsh-claude-control=open]::after{content:'›';font-size:14px}
+[data-row-key^="workspace:"]>[data-dsh-claude-control=open]:hover{background:var(--cw-sidebar-wash)}
+.cw-provider-mark{display:inline-flex;align-items:center;flex:none;white-space:nowrap;line-height:16px;font-size:10.5px;font-weight:550;padding:0 5px;border-radius:4px;margin-inline-start:4px}
+.cw-provider-mark[data-provider=Claude]{color:var(--cw-sidebar-ink);background:var(--cw-sidebar-wash)}
+.cw-provider-mark[data-provider=DeepSeek]{color:var(--dsw-alias-link,#3866b5);background:color-mix(in srgb,var(--dsw-alias-link,#3866b5) 8%,transparent)}
+[data-row-key^="session:"]:has(.cw-provider-mark[data-provider=Claude]):hover{background-color:var(--cw-sidebar-hover)}
+[data-row-key^="session:"][aria-selected=true]:has(.cw-provider-mark[data-provider=Claude]){background-color:var(--cw-sidebar-wash);box-shadow:inset 2px 0 var(--cw-sidebar-edge)}
+[data-row-key^="session:"][aria-selected=true] .cw-provider-mark[data-provider=Claude]{background:transparent}
+.dsh-claude-workspace,.dsh-sync-pane,.dsh-desktop-requests,[data-dsh-claude-control],.dsh-quota{
  --cw-text:var(--dsw-alias-label-primary,#202328);--cw-muted:var(--dsw-alias-label-secondary,#777d87);--cw-faint:var(--dsw-alias-label-tertiary,#9298a2);
  --cw-bg:var(--dsw-alias-bg-base,#fff);--cw-surface:var(--dsw-alias-bg-layer-1,#fff);--cw-soft:var(--dsw-alias-interactive-bg-hover,#f5f6f8);
  --cw-border:var(--dsw-alias-border-l2,#e7e9ed);--cw-blue:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4176e6) 94%,var(--cw-text));--cw-green:color-mix(in srgb,var(--dsw-alias-state-success-primary,#22c55e) 65%,var(--cw-text));--cw-red:var(--dsw-alias-state-error-primary,#d54747);--cw-mono:var(--dsw-font-mono,Consolas,monospace)
@@ -565,13 +602,23 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
      decorateClaudeTerminals();
      const add=document.querySelector('button[aria-label="添加工作区"],button[aria-label="Add workspace"]');
      const header=add?.closest('[class*=headerActions]')?.parentElement; if(header && !header.parentElement.querySelector('[data-dsh-claude-control=add]')){const b=makeButton('＋ 添加 Claude 工作区',addFolder,'add');b.style.cssText+=';display:block;margin:2px 12px 6px;text-align:left;flex:none';header.after(b)}
-     for(const w of workspaces().filter(info)){
+     const folders=workspaces().filter(info);
+     const registeredIds=new Set(folders.map(w=>w.workspaceId));
+     for(const button of document.querySelectorAll('[data-dsh-claude-control=open]')){
+      const owner=button.dataset.workspaceId;
+      if(!registeredIds.has(owner)||button.parentElement?.dataset.rowKey!=='workspace:'+owner)button.remove();
+     }
+     for(const w of folders){
       const row=document.querySelector('[data-row-key="'+CSS.escape('workspace:'+w.workspaceId)+'"]');
-      if(row && !row.querySelector('[data-dsh-claude-control=open]'))row.append(makeButton('接入',()=>openFolder(w),'open'));
+      if(row && !row.querySelector('[data-dsh-claude-control=open]')){
+       const open=makeButton('Claude',()=>openFolder(w),'open');
+       open.dataset.workspaceId=w.workspaceId;
+       open.title='打开 Claude 工作台';open.setAttribute('aria-label','打开 '+(w.title||w.path)+' 的 Claude 工作台');row.append(open);
+      }
      }
     }
     refresh=()=>{};
-    document.head.append(css,rows);refresh();decorate();const off=ctx.workspaces.list.subscribe(()=>{refresh();decorate()});const observer=new MutationObserver(decorate);observer.observe(document.body,{childList:true,subtree:true});
+    document.head.append(css,rows);refresh();decorate();const off=ctx.workspaces.list.subscribe(()=>{refresh();decorate()});const observer=new MutationObserver(decorate);observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['data-row-key']});
     return ()=>{observer.disconnect();off();terminalMouseDisposers.forEach(dispose=>dispose());document.querySelectorAll("[data-dsh-claude-control]").forEach(el=>el.remove());css.remove();rows.remove()};
    });
    ctx.effect(()=>{
@@ -618,6 +665,10 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     return ()=>{epoch++;clearInterval(timer);document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);dock.remove();style.remove()};
    });
    ctx.effect(()=>ctx.sidebarRightTabs.register({id,kind,multiple:true,priority:'builtin',title:()=>'Claude 工作台',guide:[{id:'new',order:21,title:()=>'Claude 工作台',description:()=>'云端对话与本地项目',icon:props=>h(Icon,{...props,name:'spark',className:'cw-guide-icon'})}]}));
+   ctx.effect(()=>ctx.slots.inject('sidebar.session.row.trailing',()=>ctx.slots.register(
+    {name:'sidebar.session.row.trailing',id:'dsh-remote-claude-provider',order:35},
+    ({sessionId})=>h(SessionProviderMark,{sessionId,list:ctx.sessions.list})
+   )));
    for(const [name,component] of [['sidebar.right.pane.tab',Body],['sidebar.right.pane.tab.title',()=>h('span',{className:'dsh-claude-tab'},'Claude 工作台')]]){
     ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register({name,key:id,inject:session=>({sessionId:session,rpc:(req,progress)=>syncRequest(ctx,session,{...req,sessionId:session},progress),workspace:info(workspaces().find(w=>w.sessionIds.includes(session))),launch:(...args)=>launch(session,...args)})},component)));
    }

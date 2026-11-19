@@ -1,6 +1,6 @@
 # DeepSeek Hareness Claude
 
-**本分支：`feature/cloud-cc-local-vm`，当前快照 `0.4.0-vm.7`。** 这是一条独立的本地虚拟机执行路线，保留 Windows 版 DeepSeek Harness 的原生聊天与真实服务器终端。
+**本分支：`feature/cloud-cc-local-vm`，当前快照 `0.4.0-vm.8`。** 这是一条独立的本地虚拟机执行路线，保留 Windows 版 DeepSeek Harness 的原生聊天与真实服务器终端。
 
 | 代码线 | 项目文件和命令在哪里执行 |
 | --- | --- |
@@ -36,6 +36,10 @@ dsh plugin --profile desktop add 'https://github.com/RyoudoTeinei/DeepSeek-Haren
 **首次使用。** 新电脑还需按[虚拟机准备说明](docs/vm-setup.md)配置独立执行环境。已有执行器保留原注册和磁盘即可。在本地项目的新聊天中打开「Claude 工作台」，配置 SSH 主机与远程工作区，点击「接入 Claude」，在左侧选择 `Claude Code · 远程工作区`。
 
 这是已在专用 Windows / QEMU / Linux VPS 环境验证的预览分支，尚未提供通用一键安装。仓库包含插件、测试及 VM 准备脚本，不包含虚拟磁盘、CC/QEMU 二进制、密钥、登录配置或个人会话数据。
+
+## 左侧工作区与会话（0.4.0-vm.8）
+
+已添加的 Claude 工作区采用暖橙色文件夹，右侧的「Claude ›」可打开工作台。聊天行按 DSH 记录的模型选择显示 Claude 或 DeepSeek 标签，切换模型后随之更新。一个项目内可同时有两种聊天；尚无可识别模型记录的行保留默认样式。
 
 ## 接入、恢复与关机（0.4.0-vm.7）
 
