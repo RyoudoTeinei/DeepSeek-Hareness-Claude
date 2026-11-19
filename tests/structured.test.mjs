@@ -3,9 +3,17 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {StructuredEvents} from '../structured-events.mjs';
-import {selectManualTurn,preparePrompt} from '../structured-chat.mjs';
+import {selectManualTurn,manualTurnIdentity,preparePrompt} from '../structured-chat.mjs';
 
 const event=value=>({type:'claude_event',event:value});
+test('separate native transcript blocks are all forwarded without truncation',()=>{
+ const t=new StructuredEvents();const chunks=[];
+ for(const [id,text] of [['block-a','First paragraph.'],['block-b','Final paragraph.']])
+  chunks.push(...t.consume(event({type:'assistant',message:{id,content:[{type:'text',text}]}})));
+ chunks.push(...t.consume(event({type:'result',is_error:false})));
+ assert.equal(chunks.filter(item=>item.type==='text-delta').map(item=>item.text).join(''),'First paragraph.Final paragraph.');
+ assert.ok(t.final);
+});
 test('partial text and final assistant records are not duplicated',()=>{
  const t=new StructuredEvents();const chunks=[];
  for(const part of [
@@ -39,6 +47,26 @@ test('privacy metadata and previous turns are excluded from outgoing message sel
   {role:'user',source:{kind:'runtime-context'},content:[{type:'text',text:'IP locale timezone'}]},
   {role:'user',source:{kind:'user',rpcId:'new',clientTimeZone:'test'},content:[{type:'text',text:'task'}]}]);
  assert.equal(selected.source.rpcId,'new');assert.equal(selected.content[0].text,'task');
+});
+test('failed prior attempts do not block or replay with the newest manual message',()=>{
+ const old={role:'user',source:{kind:'user',rpcId:'failed-old'},content:[{type:'text',text:'old task'}]};
+ const latest={role:'user',source:{kind:'user',rpcId:'newest'},content:[{type:'text',text:'new task'}]};
+ const selected=selectManualTurn([{role:'assistant',content:[]},old,latest,
+  {role:'user',source:{kind:'runtime-context'},content:[{type:'text',text:'private environment'}]},
+  {role:'user',source:{kind:'time-context'},content:[{type:'text',text:'private timezone'}]}]);
+ assert.equal(selected,latest);assert.equal(manualTurnIdentity(selected),'newest');
+});
+test('stable message ID supports manual messages without an RPC ID',()=>{
+ const message={id:'stable-id',role:'user',source:{kind:'user'},content:[{type:'text',text:'task'}]};
+ assert.equal(manualTurnIdentity(selectManualTurn([message])),'message:stable-id');
+ assert.equal(manualTurnIdentity(structuredClone(message)),manualTurnIdentity(message));
+});
+test('an invalid latest message never falls back to replaying an earlier valid one',()=>{
+ assert.throws(()=>selectManualTurn([
+  {role:'user',source:{kind:'user',rpcId:'old'},content:[]},
+  {role:'user',source:{kind:'user'},content:[]},
+ ]),/稳定标识/);
+ assert.throws(()=>selectManualTurn([{role:'user',source:{kind:'runtime-context'},content:[]}]),/手动消息/);
 });
 test('DSH file handle is verified and rewritten to a remote project path',async()=>{
  const data=Buffer.from('attachment fixture');const digest=createHash('sha256').update(data).digest('hex');

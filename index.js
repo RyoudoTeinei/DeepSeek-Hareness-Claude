@@ -5,11 +5,15 @@ import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import path from 'node:path';
 import {structuredStream} from './structured-chat.mjs';
+import {VMManager} from './vm-manager.mjs';
+import {titleForRequest,installTitleRepair} from './session-title.mjs';
+import {storedRoute} from './session-binding.mjs';
 const route='dsh-remote-claude', model='claude-code';
 const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputModalities:['text','image']};
 const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
+ ctx.effect(()=>{const manager=new VMManager().start();return ()=>manager.stop()});
  ctx.inject(['llm','attachments','agents','approval','userQuestions'],child=>{
  const services={llm:child.llm,attachments:child.attachments,agents:child.agents,approval:child.approval,userQuestions:child.userQuestions};
  child.llm.registerAdapter([route],{
@@ -19,11 +23,11 @@ export function apply(ctx){
   listModels:async()=>[info],resolveModel:async()=>info,
   prepareCall:async()=>({model:info,stream:request=>stream(request,services)}),stream:request=>stream(request,services)
  });});
+ ctx.inject(['llm','sessions','sessionTitle'],child=>installTitleRepair(child,storedRoute));
 }
 export async function* stream(request,host={}){
  if(request.purpose==='session-title'){
-  const message=request.messages.find(item=>item.role==='user'&&item.source?.kind==='user');
-  const text=(message?.content||[]).filter(block=>block.type==='text'&&!block.text.startsWith('[File ')).map(block=>block.text).join(' ').trim().slice(0,28)||'Claude 远程任务';
+  const text=titleForRequest(request);
   yield {type:'block-start',index:0,blockType:'text'};yield {type:'text-delta',index:0,text};
   yield {type:'block-end',index:0,block:{type:'text',text}};yield {type:'finish',reason:{kind:'stop'}};return;
  }

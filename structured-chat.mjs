@@ -7,6 +7,8 @@ import path from 'node:path';
 import {atomicJson,desktopDirectory,desktopScope,readJson} from './desktop-state.mjs';
 import {receiveArtifact,sshArguments} from './desktop-runtime.mjs';
 import {StructuredEvents} from './structured-events.mjs';
+import {vmStatus,stageVMAttachment,connectVM} from './vm-controller.mjs';
+import {vmChatConnection} from './vm-runtime.mjs';
 
 const PREFIX='DSH_AGENT:';
 const MAX_BYTES=100*1024*1024;
@@ -20,10 +22,19 @@ const remoteScript='"$HOME/.local/state/dsh-remote/structured-v1/structured-peer
 
 export function selectManualTurn(messages){
   const tail=messages.slice(messages.findLastIndex(message=>message.role==='assistant'||message.role==='tool')+1);
-  const selected=tail.filter(message=>message.role==='user'&&message.source?.kind==='user');
-  if(selected.length!==1||typeof selected[0].source?.rpcId!=='string'||!selected[0].source.rpcId)throw Error('无法唯一识别本轮手动消息');
-  if(!Array.isArray(selected[0].content))throw Error('消息内容格式无效');
-  return selected[0];
+  // A failed/interrupted attempt need not append an assistant message. Earlier
+  // manual messages remain in the tail; never replay them with the latest one.
+  const selected=tail.findLast(message=>message.role==='user'&&message.source?.kind==='user');
+  if(!selected)throw Error('本轮没有可发送的手动消息，请输入一条新消息');
+  manualTurnIdentity(selected);
+  if(!Array.isArray(selected.content))throw Error('消息内容格式无效');
+  return selected;
+}
+
+export function manualTurnIdentity(message){
+  if(typeof message.source?.rpcId==='string'&&message.source.rpcId.trim())return message.source.rpcId;
+  if(typeof message.id==='string'&&message.id.trim())return 'message:'+message.id;
+  throw Error('本轮消息缺少稳定标识，请重新发送一条新消息');
 }
 
 function connect(cfg,command,signal){
@@ -44,23 +55,25 @@ async function writeChunk(stream,chunk){if(!stream.write(chunk))await once(strea
 export async function prepareAgent(cfg,scope,signal){
   const source=await readFile(new URL('./structured-peer.py',import.meta.url),'utf8');
   const watcher=await readFile(new URL('./server-watch.py',import.meta.url),'utf8');
+  const native=await readFile(new URL('./native-peer.py',import.meta.url),'utf8');
+  const reader=await readFile(new URL('./chat-peer.py',import.meta.url),'utf8');
   const bootstrap=`import json,sys,os,pathlib,uuid
 os.umask(0o077)
 p=json.load(sys.stdin)
 root=pathlib.Path.home()/'.local/state/dsh-remote/structured-v1'
 root.mkdir(parents=True,exist_ok=True)
-for name,contents in [('structured-peer.py',p['source']),('server-watch.py',p['watcher'])]:
+for name,contents in [('structured-peer.py',p['source']),('server-watch.py',p['watcher']),('native-peer.py',p['native']),('chat-peer.py',p['reader'])]:
  target=root/name
  if not target.exists() or target.read_text()!=contents:
   temp=root/('source-'+uuid.uuid4().hex+'.tmp');temp.write_text(contents,encoding='utf-8');temp.replace(target)
 state=root/'sessions'/p['scope'];state.mkdir(parents=True,exist_ok=True)
 binding=state/'binding.json'
 if binding.exists() and json.loads(binding.read_text())['project']!=p['project']:raise ValueError('Session binding mismatch')
-temp=state/('binding-'+uuid.uuid4().hex+'.tmp');temp.write_text(json.dumps({'project':p['project']}));temp.replace(binding)
+temp=state/('binding-'+uuid.uuid4().hex+'.tmp');temp.write_text(json.dumps({'project':p['project'],'vmTools':p.get('vmTools',False)}));temp.replace(binding)
 print('DSH_AGENT_READY')`;
   const connection=connect(cfg,'python3 -c '+quote(bootstrap),signal);
   let stdout='';connection.child.stdout.on('data',data=>{stdout=(stdout+data).slice(-1024)});
-  connection.child.stdin.end(JSON.stringify({scope,project:cfg.project,source,watcher}));
+  connection.child.stdin.end(JSON.stringify({scope,project:cfg.project,source,watcher,native,reader,vmTools:cfg.vmTools===true}));
   const timer=setTimeout(()=>connection.child.kill(),30_000);
   try{await connection.done;if(!stdout.includes('DSH_AGENT_READY'))throw Error('结构化会话服务未就绪');}
   finally{clearTimeout(timer);}
@@ -153,7 +166,7 @@ export async function* structuredStream(request,cfg,host={}){
   const directory=path.join(desktopDirectory(scope),'structured');
   await mkdir(directory,{recursive:true});
   const manual=selectManualTurn(request.messages);
-  const turn=createHash('sha256').update(manual.source.rpcId).digest('hex').slice(0,32);
+  const turn=createHash('sha256').update(manualTurnIdentity(manual)).digest('hex').slice(0,32);
   const translator=new StructuredEvents();
   const artifacts=await readJson(path.join(directory,'artifacts.json'),[]);
   const state={turn,status:'preparing',artifacts,events:[],approvals:[]};
@@ -182,11 +195,17 @@ export async function* structuredStream(request,cfg,host={}){
   let connection;
   try{
     yield* translator.whole('reasoning','正在准备远端会话与附件…');
-    await prepareAgent(cfg,scope,request.signal);
-    const prompt=await preparePrompt(manual,host,(name,data)=>uploadBytes(cfg,scope,name,data,request.signal),request.signal);
+    if(cfg.vmTools&&!['connected','running'].includes((await vmStatus(scope)).status)){
+      yield* translator.whole('reasoning','正在恢复本聊天的虚拟机连接与云端会话…');
+      await connectVM(cfg,request.sessionId,cfg.localRoot);
+    }
+    if(!cfg.vmTools)await prepareAgent(cfg,scope,request.signal);
+    const prompt=await preparePrompt(manual,host,(name,data)=>cfg.vmTools?stageVMAttachment(scope,cfg.localRoot,name,data):uploadBytes(cfg,scope,name,data,request.signal),request.signal);
+    if(cfg.vmTools)yield* translator.whole('reasoning','工具运行位置：本地隔离虚拟机；文件写入当前共享项目');
     if(prompt.count)yield* translator.whole('reasoning','已上传并校验 '+prompt.count+' 个附件');
     state.status='running';await persist();
-    connection=connect(cfg,'python3 '+remoteScript+' turn '+scope);
+    const runner=cfg.headless===true?remoteScript:'"$HOME/.local/state/dsh-remote/structured-v1/native-peer.py"';
+    connection=cfg.vmTools?vmChatConnection(scope):connect(cfg,'python3 '+runner+' turn '+scope);
     const lines=createInterface({input:connection.child.stdout});
     const wire={turn,text:prompt.text};
     if(cfg.remoteModel)wire.model=cfg.remoteModel;
@@ -201,6 +220,7 @@ export async function* structuredStream(request,cfg,host={}){
       for await(const line of lines){
         if(!line.startsWith(PREFIX))continue;
         const frame=JSON.parse(line.slice(PREFIX.length));
+        if(frame.type==='native_status')yield* translator.whole('reasoning',frame.message);
         if(frame.type==='claude_event'&&frame.event.type==='control_request'){
           const event=frame.event;
           yield* translator.whole('reasoning','等待确认 · '+(event.request?.tool_name||'服务器操作'));
@@ -237,13 +257,21 @@ export async function* structuredStream(request,cfg,host={}){
         const chunks=translator.consume(frame);
         if(frame.type==='claude_event'&&['assistant','user','result'].includes(frame.event.type)){
           const event=frame.event;
-          if(event.type==='assistant')for(const block of event.message?.content||[])if(block.type==='tool_use')state.events.push({tool:block.name,status:'started'});
-          if(event.type==='user')for(const block of event.message?.content||[])if(block.type==='tool_result')state.events.push({tool:translator.tools.get(block.tool_use_id)||'tool',status:block.is_error?'failed':'completed'});
+          if(event.type==='assistant')for(const block of event.message?.content||[])if(block.type==='tool_use'){
+            const input=block.input||{},detail=input.description||input.file_path||input.path||input.skill||'';
+            state.events.push({id:block.id,tool:block.name,status:'started',time:Date.now(),detail:typeof detail==='string'?detail.slice(0,200):''});
+          }
+          if(event.type==='user')for(const block of event.message?.content||[])if(block.type==='tool_result')state.events.push({id:block.tool_use_id,tool:translator.tools.get(block.tool_use_id)||'tool',status:block.is_error?'failed':'completed',time:Date.now()});
           state.events=state.events.slice(-30);await persist();
         }
         yield* chunks;
       }
-      connection.child.stdin.end();await connection.done;
+      connection.child.stdin.end();
+      try{await connection.done}catch(error){
+        // A verified completion receipt wins over a late SSH teardown error.
+        // Without both receipts the operation remains unconfirmed.
+        if(!finished||!translator.final)throw error;
+      }
       request.signal?.throwIfAborted();
       if(!finished||!translator.final)throw Error('远端未确认本轮完成，请检查状态后继续');
       state.status='completed';await persist();

@@ -123,7 +123,8 @@ test('normal sync entry point binds and approves only the matching desktop scope
   }
   assert.equal(invoke({...cfg,action:'bind-chat',clientTimeZone:'Australia/Sydney',ip:'192.0.2.7'}),true);
   const route=await readJson(path.join(directory,'DSH-Remote-Claude','chat-routes',createHash('sha256').update(cfg.sessionId).digest('hex')+'.json'));
-  assert.equal(route.desktopTools,true);
+  assert.equal(route.desktopTools,false);
+  assert.equal(route.vmTools,true);
   assert.equal(route.clientTimeZone,undefined);
   assert.equal(route.ip,undefined);
   const state=desktopDirectory(desktopScope(cfg.sessionId,cfg.host,cfg.project),directory);

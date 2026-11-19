@@ -189,7 +189,7 @@ def mcp(directory, turn):
                     args = params.get('arguments')
                     if params.get('name') != 'publish_artifact' or not isinstance(args,dict) or set(args) != {'path'}:
                         raise ValueError('Invalid tool request')
-                    result = publish(directory,turn,args['path'])
+                    result = publish(directory,turn() if callable(turn) else turn,args['path'])
                     response['result']={'content':[{'type':'text','text':json.dumps(result)}],'structuredContent':result}
                 except (OSError,ValueError):
                     response['result']={'isError':True,'content':[{'type':'text','text':'Cannot publish this file. Use an existing regular file inside the project, up to 100 MiB.'}]}

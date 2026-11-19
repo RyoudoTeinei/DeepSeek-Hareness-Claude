@@ -8,18 +8,26 @@ import {createInterface} from 'node:readline/promises';
 import {connectDesktop} from './desktop-runtime.mjs';
 import {desktopScope} from './desktop-state.mjs';
 import {decodeLaunch} from './launch-wire.mjs';
-const {action,host,project,identity='',sessionId='',desktopMode=''}=decodeLaunch(process.argv.slice(2));
+import {prepareAgent} from './structured-chat.mjs';
+import {vmStatus} from './vm-controller.mjs';
+import {VM_CLOUD_ROOT} from './vm-runtime.mjs';
+import {terminalFromReady,attachCommand} from './terminal-attach.mjs';
+const {action,host,project,identity='',sessionId='',desktopMode='',remoteModel='',vmTools=false}=decodeLaunch(process.argv.slice(2));
 if(!/^[a-zA-Z0-9_][a-zA-Z0-9_.@-]*$/.test(host)|| !/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,47}$/.test(project))throw Error('SSH 主机或工作区名称无效');
 if(identity && !existsSync(identity))throw Error('找不到指定的私钥文件');
-const sshOpts=[...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),'-o','SendEnv=-*','-o','ServerAliveInterval=20','-o','ServerAliveCountMax=3'];
+const sshOpts=['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10',...(identity?['-o','IdentitiesOnly=yes','-i',identity]:[]),'-o','SendEnv=-*','-o','ServerAliveInterval=20','-o','ServerAliveCountMax=3'];
 const quote=s=>"'"+s.replaceAll("'","'\\''")+"'";
-function run(exe,args,capture=false){
- const r=spawnSync(exe,args,{stdio:capture?['inherit','pipe','inherit']:'inherit',encoding:'utf8'});
+function run(exe,args,capture=false,timeout){
+ const r=spawnSync(exe,args,{stdio:capture?(exe==='ssh'?['ignore','pipe','pipe']:['inherit','pipe','inherit']):'inherit',encoding:'utf8',timeout});
  if(r.error)throw r.error;
- if(r.status!==0)throw Error(exe+' 执行失败 ('+r.status+')');
+ if(r.status!==0){
+  const line=capture?r.stdout?.split('\n').find(line=>line.startsWith('DSH_AGENT:')):null;
+  let message;try{message=line&&JSON.parse(line.slice(10)).message}catch{}
+  throw Error(message||r.stderr?.trim()||exe+' 执行失败 ('+r.status+')');
+ }
  return capture?r.stdout.trim():'';
 }
-const ssh=(cmd,capture=false,tty=false)=>run('ssh',[...sshOpts,...(tty?['-tt']:[]),host,cmd],capture);
+const ssh=(cmd,capture=false,tty=false)=>run('ssh',[...sshOpts,...(tty?['-tt']:['-T']),host,cmd],capture,capture?20000:undefined);
 const key=desktopMode==='desktop'&&action==='image'?desktopScope(sessionId,host,project):createHash('sha256').update(host+'\n'+project).digest('hex').slice(0,16);
 const session='dsh-'+key;
 const wd='"$HOME/projects/'+project+'"';
@@ -28,6 +36,23 @@ const git=(...args)=>run('git',args,true);
 let rl;
 async function yes(msg){rl ??= createInterface({input:process.stdin,output:process.stdout}); return (await rl.question(msg+' [y/N] ')).trim().toLowerCase()==='y'}
 async function main(){
+ if(action==='native'){
+  const scope=desktopScope(sessionId,host,project);
+  if(vmTools){
+   if(!['connected','running'].includes((await vmStatus(scope)).status))throw Error('请先从工作台连接本地虚拟机工具');
+   console.error('正在连接服务器，恢复本聊天的 Claude…');
+   const ready=ssh('python3 "$HOME/'+VM_CLOUD_ROOT+'/native-peer.py" ensure '+scope+' '+quote(remoteModel),true);
+   const name=terminalFromReady(ready,scope);
+   console.error('会话已就绪，正在打开原生终端…');
+   ssh(attachCommand(name),false,true);return;
+  }
+  await prepareAgent({host,project,identity,vmTools},scope);
+  const output=ssh('python3 "$HOME/.local/state/dsh-remote/structured-v1/native-peer.py" ensure '+scope+' '+quote(remoteModel),true);
+  const frames=output.split('\n').filter(line=>line.startsWith('DSH_AGENT:')).map(line=>JSON.parse(line.slice(10)));
+  const ready=frames.find(frame=>frame.type==='native_ready');
+  if(!ready||ready.session!=='dsh-native-'+scope)throw Error(frames.find(frame=>frame.type==='broker_error')?.message||'原生 Claude 终端未就绪');
+  ssh('exec tmux attach -d -t ='+ready.session,false,true);return;
+ }
  if(action==='monitor'){
   const scope=desktopScope(sessionId,host,project);
   ssh('python3 -u "$HOME/.local/state/dsh-remote/structured-v1/server-watch.py" '+scope,false,true);return;

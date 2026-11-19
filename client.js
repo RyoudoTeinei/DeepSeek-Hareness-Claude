@@ -9,9 +9,130 @@ window.__ModuleLoader__.load({
    const bytes=new TextEncoder().encode(JSON.stringify(request));let encoded='';for(const byte of bytes)encoded+=String.fromCharCode(byte);
    return 'node (Resolve-Path '+quote(script)+') --launch '+quote(btoa(encoded))+'\r';
   }
-  const labels={claude:'接入 Claude',monitor:'服务器运行窗口',shell:'服务器 Terminal',sync:'文件同步 · 选择文件 / 推送 / 拉取',image:'上传剪贴板图片'};
+  const labels={claude:'接入 Claude',shell:'服务器终端',sync:'文件同步 · 选择文件 / 推送 / 拉取',image:'上传剪贴板图片'};
   const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace'];
-  function Guide({useTabInfo}){const {tab}=useTabInfo();return h('button',{onClick:()=>tab.actions.openTab(kind,{replaceTab:true})},'远程 Claude 工作台')}
+  // DSH does not expose its xterm instance. Keep native selection in the existing
+  // renderer, and send wheel reports explicitly through the supported input API.
+  function installTerminalMouse(root,getModel){
+   let selectText=true,pixels=0,lastDirection=0;
+   const screen=()=>root.querySelector('.xterm-screen');
+   const mouseEnabled=()=>root.querySelector('.xterm')?.classList.contains('enable-mouse-events');
+   function wheel(e){
+    const surface=screen(),model=getModel(),state=model?.state.getSnapshot();
+    if(!surface||!surface.contains(e.target)||!state?.writable||!mouseEnabled()||e.ctrlKey||!Number.isFinite(e.deltaY)||e.deltaY===0)return;
+    const bounds=surface.getBoundingClientRect(),cols=state.info?.cols,rows=state.info?.rows;
+    if(!cols||!rows||!bounds.width||!bounds.height)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const direction=Math.sign(e.deltaY);
+    if(direction!==lastDirection)pixels=0;
+    lastDirection=direction;
+    const unit=e.deltaMode===1?bounds.height/rows:e.deltaMode===2?bounds.height:1;
+    pixels+=Math.abs(e.deltaY)*unit;
+    const count=Math.min(6,Math.floor(pixels/40));
+    if(!count)return;
+    pixels=Math.min(pixels-count*40,39);
+    const x=Math.max(1,Math.min(cols,Math.floor((e.clientX-bounds.left)*cols/bounds.width)+1));
+    // The last row belongs to tmux's status line, not the Claude conversation.
+    const y=Math.max(1,Math.min(rows-1,Math.floor((e.clientY-bounds.top)*rows/bounds.height)+1));
+    model.write(('\x1b[<'+(direction<0?64:65)+';'+x+';'+y+'M').repeat(count));
+   }
+   function down(e){
+    if(selectText&&e.button===0&&screen()?.contains(e.target)&&mouseEnabled()){
+     // xterm's documented Shift gesture forces local selection, even while the
+     // application requests mouse capture. It preserves Unicode/column handling.
+     Object.defineProperty(e,'shiftKey',{value:true});
+    }
+   }
+   function copy(){
+    if(!root.querySelector('.xterm-selection div'))return false;
+    root.querySelector('.xterm-helper-textarea')?.focus();
+    return document.execCommand('copy');
+   }
+   function key(e){
+    if(e.ctrlKey&&!e.altKey&&e.key.toLowerCase()==='c'&&root.querySelector('.xterm-selection div')){
+     e.preventDefault();e.stopImmediatePropagation();copy();
+    }
+   }
+   root.addEventListener('wheel',wheel,{capture:true,passive:false});
+   root.addEventListener('mousedown',down,true);
+   root.addEventListener('keydown',key,true);
+   return {copy,setSelectText(value){selectText=!!value;},dispose(){
+    root.removeEventListener('wheel',wheel,true);root.removeEventListener('mousedown',down,true);root.removeEventListener('keydown',key,true);
+   }};
+  }
+  const WORKBENCH_CSS=`.dsh-claude-workspace,.dsh-sync-pane,.dsh-desktop-requests,[data-dsh-claude-control],.dsh-quota{
+ --cw-text:var(--dsw-alias-label-primary,#202328);--cw-muted:var(--dsw-alias-label-secondary,#777d87);--cw-faint:var(--dsw-alias-label-tertiary,#9298a2);
+ --cw-bg:var(--dsw-alias-bg-base,#fff);--cw-surface:var(--dsw-alias-bg-layer-1,#fff);--cw-soft:var(--dsw-alias-interactive-bg-hover,#f5f6f8);
+ --cw-border:var(--dsw-alias-border-l2,#e7e9ed);--cw-blue:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4176e6) 94%,var(--cw-text));--cw-green:color-mix(in srgb,var(--dsw-alias-state-success-primary,#22c55e) 65%,var(--cw-text));--cw-red:var(--dsw-alias-state-error-primary,#d54747);--cw-mono:var(--dsw-font-mono,Consolas,monospace)
+}
+.cw-icon{display:inline-block;flex:none;vertical-align:middle}.cw-guide-icon{color:#bd7659}.cw-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.dsh-claude-workspace{box-sizing:border-box;width:100%;height:100%;overflow:auto;container-type:inline-size;background:var(--cw-bg);color:var(--cw-text);font:inherit;font-size:14px;line-height:1.5;padding:28px 26px}
+.dsh-claude-workspace *{box-sizing:border-box}.cw-content{width:100%;max-width:600px;margin:0 auto;display:flex;flex-direction:column;gap:22px}
+.cw-project-header{display:flex;flex-direction:column;gap:8px;min-width:0}.cw-eyebrow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}.cw-brand{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:550;color:var(--cw-muted)}.cw-brand .cw-icon{color:#bd7659}
+.cw-project-header h1{font-size:26px;font-weight:650;line-height:1.25;letter-spacing:-.035em;margin:0;overflow-wrap:anywhere}.cw-project-path{display:flex;gap:7px;align-items:center;color:var(--cw-muted);font-family:var(--cw-mono);font-size:11.5px;min-width:0}.cw-project-path span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cw-project-path .cw-icon{color:var(--cw-faint)}
+.cw-context-line{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--cw-muted);margin-top:2px;flex-wrap:wrap}.cw-context-line>span:first-of-type{max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cw-separator{padding:0 3px;color:var(--cw-faint)}
+.cw-connection-badge{display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-size:11px;line-height:1.4;font-weight:550;border-radius:6px;padding:4px 7px;color:var(--cw-muted);background:var(--cw-soft)}.cw-connection-badge i{width:5px;height:5px;border-radius:50%;background:currentColor}.cw-connection-badge[data-state=connected],.cw-connection-badge[data-state=running]{color:var(--cw-green);background:color-mix(in srgb,var(--cw-green) 9%,transparent)}.cw-connection-badge[data-state=connecting]{color:var(--cw-blue);background:color-mix(in srgb,var(--cw-blue) 9%,transparent)}.cw-connection-badge[data-state=failed]{color:var(--cw-red);background:color-mix(in srgb,var(--cw-red) 9%,transparent)}
+.cw-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.cw-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:37px;border:1px solid var(--cw-border);border-radius:8px;background:var(--cw-surface);color:var(--cw-text);padding:8px 13px;font:inherit;font-size:12.5px;font-weight:550;line-height:1.4;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}.cw-btn:hover{background:var(--cw-soft)}.cw-primary{background:var(--cw-blue);border-color:var(--cw-blue);color:var(--dsw-alias-label-primary-inverted,#fff);padding-inline:15px;box-shadow:0 1px 2px #0000000d}.cw-primary:hover{background:color-mix(in srgb,var(--cw-blue) 90%,#000);border-color:transparent}.cw-primary>.cw-icon:last-child{margin-left:5px}.cw-secondary{font-weight:450}.cw-small{min-height:28px;padding:4px 9px;font-size:11px}.cw-btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}.cw-btn[aria-busy=true]{opacity:.85;cursor:wait}
+.cw-connect-area{display:flex;flex-direction:column;align-items:flex-start;gap:9px}.cw-connect-caption{margin:0;color:var(--cw-muted);font-size:11.5px;line-height:1.65}.cw-text-button{display:inline-flex;align-items:center;gap:5px;flex:none;border:0;background:transparent;color:var(--cw-muted);padding:2px 0;font:inherit;font-size:11.5px;cursor:pointer;text-decoration:none}.cw-text-button:hover{color:var(--cw-blue)}.cw-text-button:disabled{opacity:.45;cursor:not-allowed}
+.cw-settings{border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-surface);overflow:clip}.cw-settings>summary{display:flex;align-items:center;gap:8px;padding:13px 14px;cursor:pointer;list-style:none;font-size:12px}.cw-settings>summary::-webkit-details-marker{display:none}.cw-settings-label{display:flex;align-items:center;gap:8px;font-weight:550}.cw-settings-label .cw-icon{color:var(--cw-muted)}.cw-settings-value{margin-left:auto;font-size:11px;color:var(--cw-muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:45%}.cw-settings-chevron{color:var(--cw-faint);transition:transform .16s}.cw-settings[open] .cw-settings-chevron{transform:rotate(90deg)}.cw-settings[open]>summary{border-bottom:1px solid var(--cw-border)}.cw-settings-body{padding:16px}.cw-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.8fr);gap:14px}.cw-fields label,.cw-advanced label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:11.5px;color:var(--cw-muted)}.cw-field-full{grid-column:1/-1}
+.cw-fields input,.cw-fields select,.cw-advanced input{display:block;width:100%;min-width:0;min-height:35px;background:var(--cw-bg);border:1px solid var(--cw-border);border-radius:7px;color:var(--cw-text);padding:7px 10px;font:inherit;font-size:12px;outline:none;transition:border-color .15s}.cw-fields input:disabled,.cw-fields input[readonly],.cw-fields select:disabled,.cw-advanced input:disabled,.cw-advanced input[readonly]{color:var(--cw-muted);background:var(--cw-soft);opacity:1;-webkit-text-fill-color:var(--cw-muted)}.cw-fields input::placeholder,.cw-advanced input::placeholder{color:var(--cw-faint)}.cw-select{position:relative;display:block}.cw-select select{appearance:none;padding-right:29px;cursor:pointer}.cw-select>.cw-icon{position:absolute;right:11px;top:11px;pointer-events:none;transform:rotate(90deg);color:var(--cw-muted)}.cw-advanced{margin-top:14px;font-size:11.5px;color:var(--cw-muted)}.cw-advanced>summary{cursor:pointer;display:list-item;list-style:disclosure-closed inside}.cw-advanced[open]>summary{list-style-type:disclosure-open}.cw-advanced summary span{margin-left:6px;color:var(--cw-faint);font-size:10.5px}.cw-advanced label{margin-top:9px}.cw-field-hint{font-size:10.5px;line-height:1.65;color:var(--cw-faint);margin:12px 0 0}.cw-runtime-note{display:block;font-size:10px;color:var(--cw-faint);margin-top:8px}
+.cw-activity{border:1px solid var(--cw-border);border-radius:12px;background:var(--cw-surface);min-width:0;overflow:hidden}.cw-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 16px 12px}.cw-section-heading h3{font-size:12.5px;font-weight:600;margin:0}.cw-task-state{font-size:10.5px;color:var(--cw-muted)}.cw-task-state[data-state=completed]{color:var(--cw-green)}.cw-task-state[data-state=running],.cw-task-state[data-state=preparing]{color:var(--cw-blue)}.cw-task-state[data-state=failed]{color:var(--cw-red)}
+.cw-timeline{list-style:none;margin:0;padding:0 16px 7px;max-height:350px;overflow:auto}.cw-event{display:flex;align-items:center;gap:10px;min-height:51px;padding:10px 0;position:relative}.cw-event+.cw-event{border-top:1px solid color-mix(in srgb,var(--cw-border) 65%,transparent)}.cw-event-icon{width:29px;height:29px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:var(--cw-soft);color:var(--cw-muted);flex:none}.cw-event-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}.cw-event-title{font-size:12px;font-weight:500}.cw-event-detail{font-size:10.5px;color:var(--cw-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cw-event-result{display:flex;align-items:center;gap:7px;color:var(--cw-green);flex:none}.cw-event[data-state=started] .cw-event-result{color:var(--cw-blue)}.cw-event[data-state=failed] .cw-event-result{color:var(--cw-red)}.cw-duration{font-size:10px;font-variant-numeric:tabular-nums;color:var(--cw-faint)}.cw-history-toggle{margin:0 16px 12px}.cw-empty{display:flex;align-items:center;gap:12px;padding:19px 16px 25px}.cw-empty-icon{width:42px;height:42px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--cw-border);border-radius:10px;color:var(--cw-faint);flex:none}.cw-empty strong{display:block;font-size:12px;font-weight:500;margin-bottom:3px}.cw-empty p{margin:0;color:var(--cw-muted);font-size:11px;line-height:1.6}.cw-activity-foot{display:flex;align-items:center;gap:6px;padding:11px 16px;border-top:1px solid var(--cw-border);font-size:10.5px;color:var(--cw-muted);background:color-mix(in srgb,var(--cw-soft) 40%,transparent);flex-wrap:wrap}.cw-activity-foot .cw-text-button{margin-left:auto;font-size:10.5px}
+.cw-artifacts{border-top:1px solid var(--cw-border);padding:13px 16px}.cw-artifacts h4{font-size:11.5px;font-weight:550;margin:0 0 9px}.cw-artifact{display:flex;gap:9px;align-items:center;padding:7px 0}.cw-artifact>.cw-icon{color:var(--cw-muted)}.cw-artifact>div{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}.cw-artifact strong{font-size:11.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cw-artifact small{font-size:10px;color:var(--cw-faint)}
+.cw-error{display:flex;align-items:flex-start;gap:9px;border:1px solid color-mix(in srgb,var(--cw-red) 25%,var(--cw-border));border-radius:8px;padding:12px;background:color-mix(in srgb,var(--cw-red) 4%,var(--cw-bg));font-size:12px;color:var(--cw-text);min-width:0}.cw-error>.cw-icon{color:var(--cw-red);margin-top:1px}.cw-error>div{min-width:0;flex:1}.cw-error strong{font-weight:550;font-size:12px}.cw-error p{font-size:11px;color:var(--cw-muted);overflow-wrap:anywhere;margin:4px 0 0}.cw-error details{margin-top:7px;font-size:10.5px}.cw-error pre,.cw-approval pre{white-space:pre-wrap;overflow-wrap:anywhere;font:10.5px/1.6 var(--cw-mono);max-height:180px;overflow:auto;margin:8px 0 0}.cw-inline-message{display:flex;align-items:center;gap:7px;color:var(--cw-green);font-size:11px}.cw-approval{border:1px solid color-mix(in srgb,var(--cw-blue) 25%,var(--cw-border));border-radius:8px;padding:12px;margin:0 14px 10px}.cw-approval-title{display:flex;align-items:center;gap:7px;font-size:12px}.cw-approval-title .cw-icon{color:var(--cw-blue)}.cw-approval details{font-size:10.5px;color:var(--cw-muted);margin:8px 0}.cw-approval .cw-btn{min-height:29px;font-size:11px}
+.cw-workspace-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:9px;font-size:10.5px;color:var(--cw-faint);padding:0 2px 4px}.cw-disconnect{font-size:10.5px}.cw-disconnect:hover{color:var(--cw-red)}
+.dsh-claude-workspace :is(button,input,select,summary):focus-visible,[data-dsh-claude-control]:focus-visible,.dsh-quota summary:focus-visible{outline:2px solid var(--cw-blue);outline-offset:3px}.cw-spinner{display:inline-block;width:13px;height:13px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:cw-spin .8s linear infinite;flex:none}@keyframes cw-spin{to{transform:rotate(360deg)}}
+@container (max-width:370px){.cw-eyebrow{gap:6px}.cw-project-header h1{font-size:23px}.cw-fields{grid-template-columns:1fr}.cw-actions{gap:7px}.cw-connect-area>.cw-actions{width:100%}.cw-primary{flex:1;padding-inline:10px}.cw-secondary{padding-inline:10px}.cw-activity-foot{gap:5px}.cw-duration{display:none}.cw-settings-value{max-width:40%}}
+@media(max-width:420px){.dsh-claude-workspace{padding:22px 16px}.cw-content{gap:19px}}
+@media(prefers-reduced-motion:reduce){.cw-spinner{animation:none}.dsh-claude-workspace *{transition:none!important}}
+body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
+.dsh-sync-pane{box-sizing:border-box;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:12px;padding:20px;color:var(--cw-text);background:var(--cw-bg);font:inherit;font-size:12px;line-height:1.5;overflow:auto}.dsh-sync-pane>header{display:flex;align-items:center;gap:9px;padding-bottom:12px;border-bottom:1px solid var(--cw-border)}.dsh-sync-pane header strong{font-size:15px;flex:1;font-weight:600}.dsh-sync-pane button,.dsh-sync-pane>input{font:inherit;color:var(--cw-text);background:var(--cw-surface);border:1px solid var(--cw-border);border-radius:7px;padding:6px 10px}.dsh-sync-pane button{cursor:pointer}.dsh-sync-pane button:hover{background:var(--cw-soft)}.dsh-sync-pane button:disabled{opacity:.45;cursor:not-allowed}.dsh-sync-pane input{accent-color:var(--cw-blue)}.sync-meta{font-size:11px;line-height:1.7;color:var(--cw-muted);overflow-wrap:anywhere}.sync-line{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.sync-line>span{margin-right:auto;color:var(--cw-muted)}.sync-files{flex:1;min-height:140px;overflow:auto;border-block:1px solid var(--cw-border)}.sync-files label{display:flex;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid color-mix(in srgb,var(--cw-border) 50%,transparent)}.sync-files label:hover{background:var(--cw-soft)}.sync-files small{color:var(--dsw-alias-state-warn-primary,#bd8033);width:30px;font-size:10px;flex:none}.sync-files span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-sync-pane footer{display:flex;gap:8px;flex-wrap:wrap}.dsh-sync-pane footer button:last-child{background:var(--cw-blue);border-color:transparent;color:var(--dsw-alias-label-primary-inverted,#fff)}.dsh-sync-pane>small{font-size:10.5px;color:var(--cw-muted)}.dsh-sync-pane output{font-size:11px;max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.dsh-desktop-requests{padding:16px;border:1px solid var(--cw-border);border-radius:12px;background:var(--cw-surface);font:inherit;font-size:12px;color:var(--cw-text)}.dsh-desktop-requests header,.dsh-desktop-requests article>div,.dsh-desktop-requests footer{display:flex;align-items:center;justify-content:space-between;gap:9px}.dsh-desktop-requests p{font-size:11px;color:var(--cw-muted);line-height:1.6}.dsh-desktop-requests small{color:var(--cw-muted);font-size:10px}.dsh-desktop-requests article{border-top:1px solid var(--cw-border);padding-top:12px;margin-top:12px}.dsh-desktop-requests code,.desktop-destination{font:10.5px var(--cw-mono);overflow-wrap:anywhere}.dsh-desktop-requests button{font:inherit;font-size:11px;border:1px solid var(--cw-border);border-radius:6px;padding:5px 9px;background:var(--cw-surface);color:var(--cw-text);cursor:pointer}
+.dsh-claude-action{font:inherit;font-size:12px;line-height:1.5;color:var(--cw-muted);background:transparent;border:0;border-radius:6px;padding:4px 7px;cursor:pointer;white-space:nowrap}.dsh-claude-action:hover{background:var(--cw-soft);color:var(--cw-text)}[data-dsh-claude-control=open]{font-size:11px;opacity:.8}[data-dsh-claude-control=add]{font-size:12px}[data-dsh-claude-control=commands]{display:flex;align-items:center;flex-wrap:wrap;gap:3px;flex:none;padding:6px 8px;color:var(--cw-muted);background:var(--cw-bg);border-bottom:1px solid var(--cw-border);font:inherit;font-size:12px}[data-dsh-claude-control=commands]>details{position:relative;margin-right:8px}[data-dsh-claude-control=commands] summary{cursor:pointer;font-weight:550;color:var(--cw-text);list-style:none;padding:4px 6px;border-radius:6px}[data-dsh-claude-control=commands] summary:hover{background:var(--cw-soft)}[data-dsh-claude-control=commands] details[open]{display:grid;gap:3px}[data-dsh-claude-control=commands] details button{text-align:left}[data-dsh-claude-control=commands] button[aria-pressed=true]{color:var(--cw-blue);background:color-mix(in srgb,var(--cw-blue) 8%,transparent)}[data-dsh-claude-control=commands]>span{font-size:10px;color:var(--cw-muted)}
+.dsh-quota{position:fixed;left:16px;bottom:56px;z-index:25;font:inherit;font-size:11px;line-height:1.5;color:var(--cw-text)}.dsh-quota summary{cursor:pointer;list-style:none;background:var(--cw-surface);color:var(--cw-muted);border:1px solid var(--cw-border);border-radius:7px;padding:4px 9px}.dsh-quota summary:hover{background:var(--cw-soft);color:var(--cw-text)}.dsh-quota section{position:absolute;left:0;bottom:calc(100% + 9px);width:min(260px,80vw);padding:16px;background:var(--cw-bg);color:var(--cw-text);border:1px solid var(--cw-border);border-radius:12px;box-shadow:0 8px 28px #00000016}.dsh-quota section>*{display:block}.dsh-quota section strong{font-size:12px;font-weight:550;margin-top:14px}.dsh-quota progress{width:100%;height:5px;accent-color:var(--cw-blue);margin:7px 0}.dsh-quota small{color:var(--cw-muted);font-size:10.5px}.dsh-quota button{margin-top:10px;color:var(--cw-blue);font:inherit;background:transparent;border:0;cursor:pointer}
+
+.cw-event[data-state=unconfirmed] .cw-event-result{color:var(--cw-faint)}
+.cw-power{border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-surface);padding:14px}.cw-power-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.cw-power-symbol{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:var(--cw-soft);color:var(--cw-muted);flex:none}.cw-power-copy{flex:1;min-width:120px}.cw-power-title{display:flex;gap:8px;align-items:center;font-size:12px;font-weight:550}.cw-power-status{font-size:10px;font-weight:400;color:var(--cw-muted)}.cw-power-status[data-state=running]{color:var(--cw-green)}.cw-power-copy p,.cw-power-note{font-size:10.5px;line-height:1.6;color:var(--cw-muted);margin:3px 0 0}.cw-power-note{margin-top:10px;color:var(--cw-faint)}.cw-power-confirm{margin-top:12px;padding-top:12px;border-top:1px solid var(--cw-border);font-size:11px}.cw-power-confirm p{margin:0 0 8px;line-height:1.65}.cw-power-confirm ul{list-style:none;margin:0 0 10px;padding:0;max-height:130px;overflow:auto}.cw-power-confirm li{display:flex;justify-content:space-between;gap:10px;padding:4px 0;color:var(--cw-muted);overflow-wrap:anywhere}.cw-power-confirm .cw-primary{background:var(--cw-red);border-color:transparent;color:#fff}.cw-power .cw-error{margin-top:10px}
+`;
+  const iconPaths={
+   spark:['M12 2v5m0 10v5M2 12h5m10 0h5M4.9 4.9l3.5 3.5m7.2 7.2 3.5 3.5M4.9 19.1l3.5-3.5m7.2-7.2 3.5-3.5'],
+   folder:['M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3Z'],
+   terminal:['m5 7 5 5-5 5M13 17h6'],cloud:['M6 18a4 4 0 0 1-.5-8 6.5 6.5 0 0 1 12.6-1A4.5 4.5 0 0 1 18 18Z'],
+   arrow:['M5 12h14m-5-5 5 5-5 5'],chevron:['m9 5 7 7-7 7'],check:['m5 12 4 4L19 6'],
+   file:['M6 3h8l4 4v14H6ZM14 3v5h4M9 12h6m-6 4h6'],edit:['m14 5 5 5M4 20l4-1L20 7l-5-5L3 14Z'],
+   search:['M16 16l5 5','M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0'],
+   settings:['M4 7h16M4 17h16M8 4v6m8 4v6'],link:['m8 12 8 0M9 7H6a5 5 0 0 0 0 10h3m6-10h3a5 5 0 0 1 0 10h-3'],
+   alert:['M12 3 2 21h20ZM12 9v5m0 3v.5'],stop:['M7 7h10v10H7Z'],clock:['M12 7v5l3 2','M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0'],
+   refresh:['M20 7v5h-5M4 17v-5h5','M6 6a8 8 0 0 1 13 3M18 18a8 8 0 0 1-13-3']
+   ,power:['M12 2v10','M6.5 5.5a8.5 8.5 0 1 0 11 0']
+  };
+  function Icon({name='spark',size=18,className=''}){return h('svg',{viewBox:'0 0 24 24',width:size,height:size,fill:'none',stroke:'currentColor',strokeWidth:1.65,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true,className:'cw-icon '+className},...(iconPaths[name]||iconPaths.file).map((d,i)=>h('path',{d,key:i})))}
+  const toolNames={Bash:['执行命令','terminal'],Read:['读取文件','file'],Write:['创建文件','file'],Edit:['编辑文件','edit'],NotebookEdit:['编辑笔记本','edit'],Grep:['搜索内容','search'],Glob:['查找文件','search'],ToolSearch:['选择工具','search'],Skill:['使用技能','spark'],Agent:['分派任务','spark'],TaskStop:['停止任务','stop'],WebSearch:['搜索网页','search'],WebFetch:['读取网页','cloud']};
+  function toolPresentation(name){const short=String(name||'').split('__').pop();const [label,icon]=toolNames[short]||['运行工具','terminal'];return {label,icon};}
+  function activityRows(events){
+   const rows=[];
+   for(const event of events||[]){
+    if(event.status==='started'){rows.push({...event,key:event.id||'event-'+rows.length});continue;}
+    const row=event.id?rows.find(r=>r.id===event.id):rows.find(r=>r.tool===event.tool&&r.status==='started');
+    if(row)Object.assign(row,{...event,detail:event.detail||row.detail,startedAt:row.time});else rows.push({...event,key:event.id||'event-'+rows.length});
+   }
+   return rows;
+  }
+  function ErrorNotice({message}){
+   if(!message)return null;
+   const raw=String(message),lines=raw.trim().split('\n'),last=lines.at(-1).replace(/^(?:[A-Za-z]*Error):\s*/,'');
+   return h('div',{className:'cw-error',role:'alert'},h(Icon,{name:'alert',size:17}),h('div',null,h('strong',null,'操作未完成'),h('p',null,last.slice(0,220)),(lines.length>1||last.length>220)&&h('details',null,h('summary',null,'查看错误详情'),h('pre',null,raw))));
+  }
+  function useWorkspaceStatus(rpc,cfg,sessionId,enabled){
+   const [state,setState]=React.useState({status:'idle',events:[],artifacts:[],approvals:[]}),[error,setError]=React.useState('');
+   const busy=React.useRef(false),refreshRef=React.useRef(async()=>{});
+   React.useEffect(()=>{
+    let active=true;setState({status:'idle',events:[],artifacts:[],approvals:[]});setError('');
+    async function refresh(){if(!enabled||!cfg.host||busy.current)return;busy.current=true;try{const next=await rpc({...cfg,action:'agent-status'});if(active){setState(next);setError('')}}catch(e){if(active)setError(e.message)}finally{busy.current=false}}
+    refreshRef.current=refresh;void refresh();const timer=setInterval(refresh,2500);return()=>{active=false;clearInterval(timer)};
+   },[sessionId,cfg.host,cfg.project,cfg.vmTools,enabled]);
+   return {state,error,refresh:()=>refreshRef.current()};
+  }
   async function syncRequest(ctx,session,request,progress){
    const shells=await ctx.webTerminals.launchShells(session,new AbortController().signal);
    const shell=shells.shells.find(s=>/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(s.path));
@@ -130,54 +251,140 @@ window.__ModuleLoader__.load({
       h('button',{type:'button',onClick:()=>decide(item.request.id,false)},'拒绝'),
       h('button',{type:'button',disabled:data.connection!=='connected',onClick:()=>decide(item.request.id,true)},item.request.action==='open_file'?'允许下载并打开':'允许下载')):null)));
   }
-  function AgentStatus({rpc,cfg}){
-   const [state,setState]=React.useState({status:'idle',events:[],artifacts:[],approvals:[]});
-   const [error,setError]=React.useState('');const busy=React.useRef(false);
-   React.useEffect(()=>{let active=true;async function refresh(){if(busy.current)return;busy.current=true;try{const next=await rpc({...cfg,action:'agent-status'});if(active){setState(next);setError('')}}catch(e){if(active)setError(e.message)}finally{busy.current=false}}void refresh();const timer=setInterval(refresh,2500);return()=>{active=false;clearInterval(timer)}},[cfg.host,cfg.project]);
-   async function act(action,extra){try{await rpc({...cfg,action,...extra});setState(await rpc({...cfg,action:'agent-status'}));setError('')}catch(e){setError(e.message)}}
-   const labels={idle:'等待消息',preparing:'准备附件',running:'服务器执行中',completed:'已完成',failed:'失败',cancelled:'已停止'};
-   return h('section',{className:'dsh-desktop-requests','aria-label':'远端任务和成果'},
-    h('header',null,h('strong',null,'任务与成果'),h('small',null,labels[state.status]||state.status)),
-    h('p',null,'在左侧添加附件并发送消息。需要返回文件时，告诉 Claude“生成后将成果回传”。'),
-    error&&h('output',{role:'alert'},error),state.error&&h('output',{role:'alert'},state.error),
-    ...state.approvals.filter(item=>item.status==='pending').map(item=>h('article',{key:item.id},h('b',null,'服务器操作 · '+item.tool),
-     h('pre',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:180,overflow:'auto'}},JSON.stringify(item.input,null,2)),
-     item.source==='panel'?h('footer',null,h('button',{onClick:()=>act('agent-approve',{requestId:item.id,turnId:state.turn,approved:false})},'拒绝'),h('button',{onClick:()=>act('agent-approve',{requestId:item.id,turnId:state.turn,approved:true})},'允许本次')):h('small',null,'请在 DSH 审批提示中确认'))),
-    ...state.events.slice(-6).map((item,index)=>h('p',{key:'e'+index},(item.status==='completed'?'✓ ':item.status==='failed'?'✕ ':'▶ ')+item.tool)),
-    ...state.artifacts.map(item=>h('article',{key:item.id},h('b',null,item.name),h('p',null,item.size+' 字节 · 已校验'),
-     h('code',null,item.localFile),h('button',{type:'button',onClick:()=>act('agent-open',{artifactId:item.id})},'打开成果'))));
+  function AgentStatus({rpc,cfg,state,refresh,onOpenTerminal}){
+   const [expanded,expand]=React.useState(false),[error,setError]=React.useState('');
+   const rows=activityRows(state.events),visible=expanded?rows:rows.slice(-4);
+   const statusText={idle:'等待任务',preparing:'准备中',running:'进行中',completed:'已完成',failed:'未完成',cancelled:'已停止'};
+   async function act(action,extra){try{await rpc({...cfg,action,...extra});await refresh();setError('')}catch(e){setError(e.message)}}
+   const approvals=(state.approvals||[]).filter(item=>item.status==='pending');
+   return h('section',{className:'cw-activity','aria-label':'最近活动'},
+    h('header',{className:'cw-section-heading'},h('h3',null,'最近活动'),h('span',{className:'cw-task-state','data-state':state.status},statusText[state.status]||'等待任务')),
+    h(ErrorNotice,{message:error}),
+    ...approvals.map(item=>h('article',{className:'cw-approval',key:item.id},
+     h('div',{className:'cw-approval-title'},h(Icon,{name:'alert',size:16}),h('strong',null,'需要确认 · '+toolPresentation(item.tool).label)),
+     h('details',{open:true},h('summary',null,'查看操作内容'),h('pre',null,JSON.stringify(item.input,null,2))),
+     item.source==='panel'?h('div',{className:'cw-actions'},h('button',{className:'cw-btn',onClick:()=>act('agent-approve',{requestId:item.id,turnId:state.turn,approved:false})},'拒绝'),h('button',{className:'cw-btn cw-primary',onClick:()=>act('agent-approve',{requestId:item.id,turnId:state.turn,approved:true})},'允许本次')):h('button',{className:'cw-text-button',onClick:onOpenTerminal},'前往 Claude 终端确认',h(Icon,{name:'arrow',size:14})))),
+    visible.length?h('ol',{className:'cw-timeline'},...visible.map(item=>{
+     const info=toolPresentation(item.tool),pending=item.status==='started',running=pending&&['running','preparing'].includes(state.status),failed=item.status==='failed';
+     const detail=String(item.detail||'').replace(/^\/workspaces\/[a-f0-9]{32}\//,'');
+     const duration=item.startedAt&&item.time?Math.max(0,(item.time-item.startedAt)/1000):null;
+     return h('li',{key:item.key,className:'cw-event','data-state':pending&&!running?'unconfirmed':item.status},
+      h('span',{className:'cw-event-icon'},h(Icon,{name:info.icon,size:16})),
+      h('div',{className:'cw-event-copy'},h('span',{className:'cw-event-title'},info.label),detail&&h('span',{className:'cw-event-detail',title:detail},detail)),
+      h('span',{className:'cw-event-result',title:item.tool},duration!==null&&duration>=1&&h('span',{className:'cw-duration'},Math.round(duration)+' 秒'),running?h('span',{className:'cw-spinner','aria-label':'执行中'}):h(Icon,{name:failed?'alert':pending?'clock':'check',size:15}),h('span',{className:'cw-sr-only'},running?'执行中':failed?'执行失败':pending?'未收到完成记录':'已完成')));
+    })):h('div',{className:'cw-empty'},h('span',{className:'cw-empty-icon'},h(Icon,{name:'terminal',size:22})),h('div',null,h('strong',null,'从左侧开始对话'),h('p',null,'发送消息或添加附件，运行进度会显示在这里。'))),
+    rows.length>4&&h('button',{className:'cw-text-button cw-history-toggle',onClick:()=>expand(!expanded),'aria-expanded':expanded},expanded?'收起活动':'查看全部 '+rows.length+' 项',h(Icon,{name:'chevron',size:13})),
+    (state.artifacts||[]).length>0&&h('div',{className:'cw-artifacts'},h('h4',null,'成果文件'),...(state.artifacts||[]).map(item=>h('article',{className:'cw-artifact',key:item.id},h(Icon,{name:'file',size:19}),h('div',null,h('strong',null,item.name),h('small',null,(item.size<1024?item.size+' B':Math.round(item.size/1024)+' KB')+' · 已保存')),h('button',{className:'cw-btn cw-small',onClick:()=>act('agent-open',{artifactId:item.id})},'打开')))),
+    h('footer',{className:'cw-activity-foot'},h(Icon,{name:cfg.vmTools?'folder':'cloud',size:13}),cfg.vmTools?'文件修改直接保存到本机项目':'成果文件可回传到本机',h('button',{className:'cw-text-button',onClick:onOpenTerminal},'详细输出',h(Icon,{name:'arrow',size:12}))));
   }
-  function Body({useTabInfo,launch,workspace,rpc}){
-   const tab=useTabInfo ? useTabInfo().tab : null;
-   const [cfg,set]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(workspace ? id+":"+workspace.workspaceId : id))||defaults()}catch{return defaults()}});
-   function defaults(){return {host:'',project:workspace?.remoteName || 'my-test',identity:'',structuredChat:true}}
-   const [msg,notify]=React.useState('');
-   const [syncOpen,showSync]=React.useState(false);
-   if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,back:()=>showSync(false),terminal:()=>tab.actions.openTab('terminal',{})});
-   async function start(op){
-    try{if(!/^[\w][\w.@-]*$/.test(cfg.host)||!/^\w[\w-]{0,47}$/.test(cfg.project)||/[\r\n\x00]/.test(cfg.identity))throw Error('请检查主机、工作区名和私钥路径');
-     localStorage.setItem(workspace ? id+":"+workspace.workspaceId : id,JSON.stringify(cfg));if(op==='sync'){showSync(true);return}notify('正在连接…');await launch(tab,op,cfg);notify(op==='claude'&&cfg.structuredChat?'已连接，右侧运行窗口已打开。可在左侧发送消息和附件。':'终端已打开');
-    }catch(e){notify(String(e.message||e))}
+  function PowerControls({rpc,sessionId,onBusyChange,disabled}){
+   const [power,setPower]=React.useState({state:'loading',connections:[]}),[busy,setBusy]=React.useState(''),[review,setReview]=React.useState(null),[error,setError]=React.useState('');
+   const guard=React.useRef(false);
+   React.useEffect(()=>{let active=true,pending=false;async function refresh(){if(pending||guard.current)return;pending=true;try{const value=await rpc({action:'vm-power-status'});if(active)setPower(value)}catch(e){if(active)setError(e.message)}finally{pending=false}}void refresh();const timer=setInterval(refresh,4000);return()=>{active=false;clearInterval(timer)}},[sessionId]);
+   async function operate(action,confirmedConnections){
+    if(guard.current||disabled)return;guard.current=true;setBusy(action);onBusyChange(true);setError('');
+    try{
+     const result=await rpc({action:'vm-power-'+action,...(confirmedConnections?{confirmedConnections}:{})});
+     if(result.status==='needs-confirmation'){setReview(result.connections);return;}
+     setReview(null);setPower({...result.power,controlReady:true});
+    }catch(e){setError(e.message)}finally{guard.current=false;setBusy('');onBusyChange(false)}
    }
-   return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify('请将图片粘贴到左侧聊天输入框后发送。');else void start('image')}}},
-    h('small',null,'CLAUDE CODE  /  REMOTE'),h('h2',null,workspace?.title || 'Claude 工作区'),workspace && h('div',null,'本地文件夹　'+workspace.path),
-    ...[['host','SSH 用户和主机（也可用本机 SSH 别名）'],['project','远程工作区（每人选自己的名字）'],['identity','本地私钥文件路径（使用 SSH 配置时留空）']].map(([k,t])=>h('label',{key:k},t,h('input',{style:{width:'100%'},value:cfg[k],onChange:e=>set({...cfg,[k]:e.target.value})}))),
-    h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.structuredChat,onChange:e=>set({...cfg,structuredChat:e.target.checked})}),' 结构化聊天 · 自动上传附件并回传成果'),
-    cfg.structuredChat&&h('label',null,'远端模型',h('select',{value:cfg.remoteModel||'',onChange:e=>set({...cfg,remoteModel:e.target.value})},...['','sonnet','opus','haiku'].map(value=>h('option',{key:value,value},value||'服务器默认')))),
-    !cfg.structuredChat&&h('label',{className:'desktop-mode-toggle'},h('input',{type:'checkbox',checked:!!cfg.desktopTools,onChange:e=>set({...cfg,desktopTools:e.target.checked})}),' 桌面模式 · 为当前聊天建立独立 Claude 会话'),
-    ...Object.entries(labels).filter(([op])=>cfg.structuredChat?op!=='image':op!=='monitor').map(([op,t])=>h('button',{key:op,onClick:()=>start(op)},t)),
-    cfg.structuredChat&&cfg.host&&h(AgentStatus,{rpc,cfg}),
-    !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
-    h('p',null,'点击「文件同步」勾选本地文件并提交推送，或拉取远程提交。截图可粘贴到本面板，或点击上传按钮。'),h('output',null,msg));
+   const phase=busy==='start'?'starting':busy==='stop'?'stopping':power.state;
+   const labels={loading:'读取中',running:'已启动',stopped:'已关闭',starting:'正在启动',stopping:'正在关闭',unknown:'状态未知',unavailable:'未配置'};
+   const running=phase==='running',transition=!!busy||['starting','stopping','loading'].includes(phase);
+   const groups={};for(const item of review||[]){const name=item.title||item.project;groups[name]=(groups[name]||0)+1;}
+   return h('section',{className:'cw-power','aria-label':'虚拟机电源'},
+    h('div',{className:'cw-power-row'},h('span',{className:'cw-power-symbol'},h(Icon,{name:'power',size:18})),h('div',{className:'cw-power-copy'},
+     h('div',{className:'cw-power-title'},'执行虚拟机',h('span',{className:'cw-power-status','data-state':phase,role:'status'},labels[phase]||'状态未知')),
+     h('p',null,running?((power.connections?.length||0)+' 个会话连接 · '+((power.memoryMiB||2048)/1024)+' GB 配置 · '+(power.cpus||2)+' 核'):phase==='stopped'?'不占用虚拟机运行资源':'正在读取本机执行环境状态')),
+     h('button',{className:'cw-btn cw-small',disabled:disabled||transition||!power.controlReady||['unknown','unavailable'].includes(phase),onClick:()=>operate(running?'stop':'start')},transition?h('span',{className:'cw-spinner'}):null,running?'关闭虚拟机':phase==='stopping'?'正在关闭…':phase==='starting'?'正在启动…':'启动虚拟机')),
+    h('p',{className:'cw-power-note'},power.controlReady?'关机保留文件与聊天；启动或接入时按需开启。':'重启 DSH 后即可使用电源控制。'),
+    review&&h('div',{className:'cw-power-confirm',role:'alert'},h('p',null,'将断开 '+review.length+' 个会话的本机连接。正在运行的命令会停止，已保存文件与聊天记录保留。'),
+     h('ul',null,...Object.entries(groups).map(([name,count])=>h('li',{key:name},h('span',null,name),h('span',null,count+' 个会话')))),
+     h('div',{className:'cw-actions'},h('button',{className:'cw-btn cw-small',disabled:!!busy,onClick:()=>setReview(null)},'取消'),h('button',{className:'cw-btn cw-small cw-primary',disabled:!!busy,onClick:()=>operate('stop',review.map(item=>item.connectionId))},'断开全部并关闭'))),
+    h(ErrorNotice,{message:error||power.error}));
   }
+  function Body({useTabInfo,launch,workspace,rpc,sessionId}){
+   const tab=useTabInfo?useTabInfo().tab:null;
+   const [cfg,set]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(workspace?id+':'+workspace.workspaceId:id))||defaults()}catch{return defaults()}});
+   function defaults(){return {host:'',project:workspace?.remoteName||'my-test',identity:'',structuredChat:true,vmTools:true}}
+   const [bound,setBound]=React.useState(false),[ready,setReady]=React.useState(false),[settingsOpen,showSettings]=React.useState(false);
+   const [notice,notify]=React.useState(null),[working,setWorking]=React.useState(''),[syncOpen,showSync]=React.useState(false);
+   const [powerBusy,setPowerBusy]=React.useState(false);
+   const actionGuard=React.useRef(false);
+   React.useEffect(()=>{let active=true;setReady(false);notify(null);void rpc({action:'session-config'}).then(result=>{
+    if(!active)return;setBound(!!result.bound);showSettings(!result.bound);
+    set(previous=>result.bound?{...previous,...result.route}:{...previous,structuredChat:true,vmTools:true,desktopTools:false});setReady(true);
+   }).catch(error=>{if(active)notify({kind:'error',text:error.message})});return()=>{active=false};},[sessionId,workspace?.workspaceId]);
+   const {state,error,refresh}=useWorkspaceStatus(rpc,cfg,sessionId,ready&&bound&&!syncOpen);
+   React.useEffect(()=>{if(notice?.kind!=='success')return;const timer=setTimeout(()=>notify(null),5000);return()=>clearTimeout(timer)},[notice]);
+   if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,back:()=>showSync(false),terminal:()=>tab?.actions.openTab('terminal',{})});
+   async function start(op){
+    if(actionGuard.current||powerBusy)return;
+    actionGuard.current=true;setWorking(op);notify(null);
+    try{
+     if(!/^[\w][\w.@-]*$/.test(cfg.host||'')||!/^\w[\w-]{0,47}$/.test(cfg.project||'')||/[\r\n\x00]/.test(cfg.identity||'')){showSettings(true);throw Error('请填写有效的 SSH 主机和远程工作区。')}
+     localStorage.setItem(workspace?id+':'+workspace.workspaceId:id,JSON.stringify({host:cfg.host,project:cfg.project,identity:cfg.identity,remoteModel:cfg.remoteModel}));
+     if(op==='sync'){showSync(true);return;}
+     const connected=await launch(tab,op,cfg);
+     if(op==='claude'&&connected){set(connected);setBound(true);showSettings(false);}
+     notify({kind:'success',text:'终端已打开，可以继续当前会话。'});void refresh();
+    }catch(e){notify({kind:'error',text:String(e.message||e)})}
+    finally{actionGuard.current=false;setWorking('')}
+   }
+   async function disconnect(){
+    if(actionGuard.current)return;actionGuard.current=true;setWorking('disconnect');notify(null);
+    try{await rpc({...cfg,action:'vm-disconnect'});await refresh();notify({kind:'success',text:'已断开本机执行连接，聊天记录已保留。'})}
+    catch(e){notify({kind:'error',text:e.message})}finally{actionGuard.current=false;setWorking('')}
+   }
+   const phase=!ready?'loading':working==='claude'?'connecting':cfg.vmTools?(state.vm?.status||'offline'):'legacy';
+   const phaseLabels={loading:'读取中',connecting:'连接中',connected:'已连接',running:'运行中',offline:'未连接',failed:'连接异常',legacy:'服务器模式'};
+   const connected=['connected','running'].includes(phase),title=workspace?.title||'Claude 工作区';
+   const modelNames={'':'服务器默认',sonnet:'Sonnet',opus:'Opus',haiku:'Haiku'};
+   const settings=()=>h('details',{className:'cw-settings',open:settingsOpen,onToggle:e=>showSettings(e.currentTarget.open)},
+    h('summary',null,h('span',{className:'cw-settings-label'},h(Icon,{name:'settings',size:16}),bound?'连接设置':'设置连接'),h('span',{className:'cw-settings-value'},bound?cfg.host:'SSH 与模型'),h(Icon,{name:'chevron',size:14,className:'cw-settings-chevron'})),
+    h('div',{className:'cw-settings-body'},
+     h('div',{className:'cw-fields'},
+      h('label',null,h('span',null,'SSH 主机'),h('input',{value:cfg.host||'',readOnly:bound,placeholder:'例如 my-server 或 user@host',spellCheck:false,onChange:e=>set({...cfg,host:e.target.value})})),
+      h('label',null,h('span',null,'启动模型'),h('span',{className:'cw-select'},h('select',{value:cfg.remoteModel||'',disabled:bound,onChange:e=>set({...cfg,remoteModel:e.target.value})},...Object.entries(modelNames).map(([value,text])=>h('option',{key:value,value},text))),h(Icon,{name:'chevron',size:13}))),
+      h('label',{className:'cw-field-full'},h('span',null,'远程工作区'),h('input',{value:cfg.project||'',readOnly:bound,placeholder:'项目在服务器上的名称',spellCheck:false,onChange:e=>set({...cfg,project:e.target.value})}))),
+     h('details',{className:'cw-advanced'},h('summary',null,'SSH 私钥',h('span',null,'可选')),h('label',null,h('span',{className:'cw-sr-only'},'本地私钥文件路径'),h('input',{value:cfg.identity||'',readOnly:bound,placeholder:'使用 SSH 配置时留空',spellCheck:false,onChange:e=>set({...cfg,identity:e.target.value})}))),
+     h('p',{className:'cw-field-hint'},bound?'本聊天的工作区已固定。运行中可在终端使用 /model 切换模型。':'支持本机 SSH 别名。连接后，当前文件夹会与本聊天的执行环境关联。'),
+     cfg.vmTools&&state.vm?.executorVersion&&h('small',{className:'cw-runtime-note'},'执行器 CC '+state.vm.executorVersion+' · 独立配置 · 未登录')));
+   const failure=notice?.kind==='error'?notice.text:error||state.vm?.error||state.error;
+   return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify({kind:'success',text:'请将图片粘贴到左侧聊天输入框后发送。'});else void start('image')}}},
+    h('div',{className:'cw-content'},
+     h('header',{className:'cw-project-header'},
+      h('div',{className:'cw-eyebrow'},h('span',{className:'cw-brand'},h(Icon,{name:'spark',size:19}),h('span',null,'Claude 工作台')),h('span',{className:'cw-connection-badge','data-state':phase,role:'status'},h('i'),phaseLabels[phase]||'未连接')),
+      h('h1',null,title),
+      workspace&&h('div',{className:'cw-project-path'},h(Icon,{name:'folder',size:14}),h('span',{title:workspace.path},workspace.path)),
+      ready&&h('div',{className:'cw-context-line'},h(Icon,{name:'cloud',size:14}),h('span',null,cfg.host||'待配置主机'),h('span',{className:'cw-separator'},'·'),h('span',null,cfg.vmTools?'本机项目':'服务器工作区'))),
+     !bound&&settings(),
+     h('div',{className:'cw-connect-area'},
+      h('div',{className:'cw-actions'},
+       h('button',{className:'cw-btn cw-primary','data-action':'connect',disabled:!ready||!!working||powerBusy,'aria-busy':working==='claude',onClick:()=>start('claude')},working==='claude'?h('span',{className:'cw-spinner'}):h(Icon,{name:'terminal',size:17}),working==='claude'?'正在连接…':connected?'打开 Claude 终端':bound?'继续会话':'接入 Claude',working!=='claude'&&h(Icon,{name:'arrow',size:15})),
+       h('button',{className:'cw-btn cw-secondary','data-action':'shell',disabled:!ready||!!working,onClick:()=>start('shell')},h(Icon,{name:'terminal',size:16}),'服务器终端')),
+      h('p',{className:'cw-connect-caption'},cfg.vmTools?'在左侧对话；在终端确认操作、查看完整输出。':'沿用本聊天的服务器环境，重连会恢复原会话。'),
+      !cfg.vmTools&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('sync')},h(Icon,{name:'folder',size:14}),'文件同步',h(Icon,{name:'arrow',size:13})),
+      !cfg.structuredChat&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('image')},'上传剪贴板图片')),
+     h(ErrorNotice,{message:failure}),
+     notice?.kind==='success'&&h('div',{className:'cw-inline-message',role:'status'},h(Icon,{name:'check',size:15}),notice.text),
+     cfg.structuredChat&&h(AgentStatus,{rpc,cfg,state,refresh,onOpenTerminal:()=>start('claude')}),
+     bound&&settings(),
+     h(PowerControls,{rpc,sessionId,onBusyChange:setPowerBusy,disabled:!!working}),
+     !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
+     h('footer',{className:'cw-workspace-footer'},h('span',null,cfg.vmTools?'重连会恢复本聊天':'沿用原会话与执行环境'),cfg.vmTools&&bound&&connected&&h('button',{className:'cw-text-button cw-disconnect',disabled:!!working||!connected,onClick:disconnect},h(Icon,{name:'link',size:13}),working==='disconnect'?'正在断开…':'断开连接'))));
+  }
+
   function apply(ctx){
    async function launch(session,tab,op,cfg){
-    if(op==='claude'&&cfg.structuredChat){await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'bind-chat',sessionId:session});await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'agent-connect',sessionId:session});op='monitor';}
-    else if(op==='monitor')await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'agent-connect',sessionId:session});
+    if(op==='claude'){
+     cfg=await syncRequest(ctx,session,{...cfg,identity:cfg.identity||'',action:'session-connect',sessionId:session});
+     if(cfg.structuredChat)op='native';
+    }
     const choices=await ctx.webTerminals.launchShells(session,new AbortController().signal);
     const ps=choices.shells.find(s=>/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?$/i.test(s.path));if(!ps)throw Error('当前 DSH 环境没有 Windows PowerShell 终端');
     const token=crypto.randomUUID();
-    if(op==='claude')await syncRequest(ctx,session,{...cfg,action:'bind-chat',sessionId:session});
     tab.actions.openTab('terminal',{params:{shellPath:ps.path,dshRemoteLaunch:token,dshRemoteOperation:op}});
     for(let n=0;n<150;n++){
      for(const t of ctx.sidebarRight.openTabs.getSnapshot()){
@@ -186,15 +393,15 @@ window.__ModuleLoader__.load({
       if(nav.params?.dshRemoteLaunch!==token)continue;
       const model=ctx.webTerminals.view(session,t.tabId,nav.address,nav.params.terminalId,ps.path);
       if(!model.state.getSnapshot()?.writable)continue;
-      model.rename('Claude · '+(op==='shell'?'服务器 Terminal':labels[op])+' · '+cfg.project);
-      model.write(launchCommand({action:op,host:cfg.host,project:cfg.project,identity:cfg.identity||'',sessionId:session,desktopMode:cfg.desktopTools?'desktop':''}));
-      if(op==='claude'||op==='monitor'){
+      model.rename('Claude · '+(op==='shell'?'服务器终端':op==='native'?'Claude Code':labels[op])+' · '+cfg.project);
+      model.write(launchCommand({action:op,host:cfg.host,project:cfg.project,identity:cfg.identity||'',sessionId:session,desktopMode:cfg.desktopTools?'desktop':'',remoteModel:cfg.remoteModel||'',vmTools:!!cfg.vmTools}));
+      if(op==='claude'||op==='native'){
        const pane=document.querySelector('div[data-sidebar-right-tab="'+CSS.escape(t.tabId)+'"]');
        const target=pane && ctx.sidebarRight.focusedTarget(pane);
        if(target?.sessionId===session && pane.closest('[data-sidebar-right-panel="fullscreen"]'))ctx.sidebarRight.toggleFullscreen(target);
        document.querySelector('[data-composer-input]')?.focus();
       }
-      return;
+      return cfg;
      }
      await new Promise(r=>setTimeout(r,100));
     }
@@ -241,40 +448,13 @@ window.__ModuleLoader__.load({
    }
    let refresh=()=>{};
    const css=document.createElement('style');
-   css.textContent=`
-    .desktop-mode-toggle{display:flex;align-items:center;gap:8px}.desktop-mode-toggle input{width:auto;margin:0}
-    .dsh-desktop-requests{border:1px solid #d9775766;border-radius:10px;padding:14px;display:grid;gap:10px}
-    .dsh-desktop-requests header,.dsh-desktop-requests article>div,.dsh-desktop-requests footer{display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .dsh-desktop-requests p{font-size:12px;line-height:1.6;margin:4px 0}.dsh-desktop-requests article{border-top:1px solid #8884;padding-top:10px}
-    .dsh-desktop-requests code,.desktop-destination{display:block;overflow-wrap:anywhere;font-size:12px}.dsh-desktop-requests footer{justify-content:flex-end;margin-top:8px}
-    .dsh-sync-pane{box-sizing:border-box;height:100%;min-height:0;display:flex;flex-direction:column;gap:8px;padding:14px;color:inherit;overflow:auto}
-    .dsh-sync-pane header,.dsh-sync-pane footer,.sync-line{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.dsh-sync-pane header strong{flex:1;color:#d97757}.sync-meta,.dsh-sync-pane output{font-size:12px;overflow-wrap:anywhere}.dsh-sync-pane output{white-space:pre-wrap}
-    .dsh-sync-pane button,.dsh-sync-pane>input{color:inherit;background:#8881;border:1px solid #8885;border-radius:6px;padding:5px 9px}.dsh-sync-pane button{cursor:pointer}.dsh-sync-pane button:disabled{opacity:.5}.dsh-sync-pane footer button:last-child{background:#d97757;color:#201611}
-    .sync-files{flex:1;min-height:100px;overflow:auto;border-block:1px solid #8884}.sync-files label{display:flex;align-items:center;gap:8px;padding:4px}.sync-files label:hover{background:#8882}.sync-files input{accent-color:#d97757}.sync-files small{color:#d97757}.sync-files span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-    [data-dsh-claude-control=commands]{display:flex;gap:12px;align-items:start;flex:none;padding:6px 10px;color:#d97757;background:#d9775712;font-size:12px}
-    [data-dsh-claude-control=commands] summary{cursor:pointer;font-weight:650;list-style:none}
-    [data-dsh-claude-control=commands] details[open]{display:grid;gap:5px}
-    [data-dsh-claude-control=commands] button{display:block;text-align:left}
-    button:has(.dsh-claude-mark),[role=button]:has(.dsh-claude-mark){color:#d97757}
-    button:has(.dsh-claude-mark):hover,button[aria-current]:has(.dsh-claude-mark){background:#d9775722}
-    .dsh-claude-workspace{--accent:#d97757;box-sizing:border-box;display:grid;align-content:start;gap:12px;padding:clamp(16px,4vw,40px);width:100%;height:100%;overflow:auto;border-top:3px solid var(--accent);background:linear-gradient(145deg,#d977571c,transparent 65%)}
-    .dsh-claude-workspace>*{width:100%;max-width:720px;box-sizing:border-box}
-    .dsh-claude-workspace h2,.dsh-claude-workspace small{color:var(--accent);margin:0}
-    .dsh-claude-workspace small{font-weight:650;letter-spacing:.13em}
-    .dsh-claude-workspace label{font-size:13px}
-    .dsh-claude-workspace input,.dsh-claude-workspace button{font:inherit;padding:8px 12px;border:1px solid #d9775766;border-radius:8px}
-    .dsh-claude-workspace input{display:block;box-sizing:border-box;margin-top:5px;color:inherit;background:#8881}
-    .dsh-claude-workspace button{cursor:pointer;color:inherit;background:#d977571a;text-align:left}
-    .dsh-claude-workspace button:first-of-type{background:#d97757;color:#201611;font-weight:650}
-    .dsh-claude-workspace :focus-visible{outline:2px solid #d97757}
-    [data-dockkit-tab]:has(.dsh-claude-tab),[data-dockkit-tab][title^="Claude ·"]{color:#d97757}
-   `;
+   css.textContent=WORKBENCH_CSS;
       ctx.effect(()=>{
     const rows=document.createElement('style');
+    const terminalMouseDisposers=[];
     const makeButton=(label,callback,role)=>{
      const button=document.createElement('button');button.type='button';button.dataset.dshClaudeControl=role;
-     button.textContent=label;button.title=label;button.style.cssText='color:#d97757;background:transparent;border:0;cursor:pointer;font:inherit;padding:2px 5px;white-space:nowrap';
+     button.textContent=label;button.title=label;button.className='dsh-claude-action';
      button.onclick=e=>{e.stopPropagation();Promise.resolve(callback()).catch(err=>window.alert(err.message))};
      return button;
     };
@@ -287,7 +467,7 @@ window.__ModuleLoader__.load({
       if(!owner)continue;
       const navigation=()=>ctx.sidebarRight.tabDomain.occurrence(owner.sessionId,{id:tabId}).navigation.getSnapshot();
       const nav=navigation(),params=nav.params;
-      if(params?.dshRemoteOperation!=='claude'||!params.dshRemoteLaunch)continue;
+      if(!['claude','native'].includes(params?.dshRemoteOperation)||!params.dshRemoteLaunch)continue;
       const bar=document.createElement('div');bar.dataset.dshClaudeControl='commands';
       const menu=document.createElement('details'), summary=document.createElement('summary'),note=document.createElement('span');
       summary.textContent='Claude Code ▾';menu.append(summary);bar.append(menu,note);note.setAttribute('role','status');
@@ -306,6 +486,15 @@ window.__ModuleLoader__.load({
         note.textContent='已填入 '+cmd+'，按 Enter 执行';
        },'slash'));
       }
+      if(params.dshRemoteOperation==='native'){
+       const model=()=>navigation().params?.dshRemoteLaunch===params.dshRemoteLaunch?ctx.webTerminals.view(owner.sessionId,tabId,nav.address,params.terminalId,params.shellPath):null;
+       const mouse=installTerminalMouse(root,model);terminalMouseDisposers.push(()=>mouse.dispose());
+       let selecting=true;
+       const toggle=makeButton('鼠标选字',()=>{selecting=!selecting;mouse.setSelectText(selecting);toggle.textContent=selecting?'鼠标选字':'鼠标操作 CC';toggle.setAttribute('aria-pressed',String(selecting));},'mouse-mode');
+       toggle.title='默认拖选本机文字；切换后可点击 CC 菜单';toggle.setAttribute('aria-pressed','true');bar.append(toggle);
+       bar.append(makeButton('复制选中',()=>{note.textContent=mouse.copy()?'已复制':'请先在终端拖选文字，再按 Ctrl+C';},'copy'));
+       for(const [label,key] of [['↑ 翻页','\x1b[5~'],['↓ 翻页','\x1b[6~'],['回到底部','\x1b[1;5F']])bar.append(makeButton(label,()=>{const terminal=model();if(terminal?.state.getSnapshot()?.writable){terminal.write(key);root.querySelector('.xterm-helper-textarea')?.focus();}},'scroll'));
+      }
       root.prepend(bar);
      }
     }
@@ -318,19 +507,15 @@ window.__ModuleLoader__.load({
       if(row && !row.querySelector('[data-dsh-claude-control=open]'))row.append(makeButton('接入',()=>openFolder(w),'open'));
      }
     }
-    refresh=()=>{
-     const keys=workspaces().filter(info).flatMap(ws=>['workspace:'+ws.workspaceId,...ws.sessionIds.map(id=>'session:'+id)]);
-     const selectors=keys.map(key=>'[data-row-key="'+CSS.escape(key)+'"]');
-     rows.textContent=selectors.length ? selectors.map(s=>s+','+s+' svg').join(',')+'{color:#d97757!important}'+selectors.map(s=>s+'[aria-selected=true]').join(',')+'{background:#d9775722!important;box-shadow:inset 2px 0 #d97757}' : '';
-    };
+    refresh=()=>{};
     document.head.append(css,rows);refresh();decorate();const off=ctx.workspaces.list.subscribe(()=>{refresh();decorate()});const observer=new MutationObserver(decorate);observer.observe(document.body,{childList:true,subtree:true});
-    return ()=>{observer.disconnect();off();document.querySelectorAll("[data-dsh-claude-control]").forEach(el=>el.remove());css.remove();rows.remove()};
+    return ()=>{observer.disconnect();off();terminalMouseDisposers.forEach(dispose=>dispose());document.querySelectorAll("[data-dsh-claude-control]").forEach(el=>el.remove());css.remove();rows.remove()};
    });
    ctx.effect(()=>{
     const dock=document.createElement('details'),toggle=document.createElement('summary'),card=document.createElement('section');
     dock.className='dsh-quota';toggle.textContent='◴  Claude 额度';toggle.title='查看 Claude 套餐额度';
     const style=document.createElement('style');
-    style.textContent='.dsh-quota{position:fixed;left:16px;bottom:56px;z-index:25;font:12px/1.5 system-ui;color:var(--text-primary,#eee)}.dsh-quota summary{cursor:pointer;list-style:none;background:#292624;color:#efa98e;border:1px solid #675047;border-radius:18px;padding:2px 10px}.dsh-quota section{position:absolute;left:0;bottom:calc(100% + 8px);width:min(260px,80vw);padding:16px;background:#292726;color:#eee;border:1px solid #55504c;border-radius:14px;box-shadow:0 8px 32px #0005}.dsh-quota section>*{display:block}.dsh-quota section strong{margin-top:12px}.dsh-quota progress{width:100%;height:5px;accent-color:#d97757}.dsh-quota small{color:#bdb6b0}.dsh-quota button{margin-top:10px;color:#efa98e;background:transparent;border:0;cursor:pointer}';
+    style.textContent='';
     document.head.append(style);dock.append(toggle,card);document.body.append(dock);
     let key='',target=null,epoch=0,busy=false,last=0;
     const add=(tag,text)=>{const el=document.createElement(tag);el.textContent=text;card.append(el);return el};
@@ -369,9 +554,9 @@ window.__ModuleLoader__.load({
     tick();const timer=setInterval(tick,1500);
     return ()=>{epoch++;clearInterval(timer);document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);dock.remove();style.remove()};
    });
-   ctx.effect(()=>ctx.sidebarRightTabs.register({id,kind,multiple:true,priority:'builtin',title:()=>'远程 Claude',guide:[{id:'new',order:21,title:()=>'远程 Claude',description:()=>'SSH、Git 和多模态工作区'}]}));
-   for(const [name,component] of [['sidebar.right.tab.guide.entry',Guide],['sidebar.right.pane.tab',Body],['sidebar.right.pane.tab.title',()=>h('span',{className:'dsh-claude-tab'},'Claude 工作区')]]){
-    ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register({name,key:id,inject:session=>({rpc:(req,progress)=>syncRequest(ctx,session,{...req,sessionId:session},progress),workspace:info(workspaces().find(w=>w.sessionIds.includes(session))),launch:(...args)=>launch(session,...args)})},component)));
+   ctx.effect(()=>ctx.sidebarRightTabs.register({id,kind,multiple:true,priority:'builtin',title:()=>'Claude 工作台',guide:[{id:'new',order:21,title:()=>'Claude 工作台',description:()=>'云端对话与本地项目',icon:props=>h(Icon,{...props,name:'spark',className:'cw-guide-icon'})}]}));
+   for(const [name,component] of [['sidebar.right.pane.tab',Body],['sidebar.right.pane.tab.title',()=>h('span',{className:'dsh-claude-tab'},'Claude 工作台')]]){
+    ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register({name,key:id,inject:session=>({sessionId:session,rpc:(req,progress)=>syncRequest(ctx,session,{...req,sessionId:session},progress),workspace:info(workspaces().find(w=>w.sessionIds.includes(session))),launch:(...args)=>launch(session,...args)})},component)));
    }
   }
   return {inject,apply};
