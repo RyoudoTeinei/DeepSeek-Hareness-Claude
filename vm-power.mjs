@@ -1,12 +1,13 @@
 // Local-only power controls. They are never exposed as Claude MCP tools.
 import net from 'node:net';
 import {createInterface} from 'node:readline';
-import {readFile,readdir,mkdir,writeFile,unlink,stat} from 'node:fs/promises';
+import {readFile,readdir,mkdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
-import {randomBytes} from 'node:crypto';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {atomicJson,readJson} from './desktop-state.mjs';
 
-export const POWER_VERSION='vm-power-v1';
+export const POWER_VERSION='vm-power-v2';
 export const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 export const powerRoot=base=>path.join(base,'DSH-Remote-Claude');
 export async function loadPowerProfile(base=process.env.LOCALAPPDATA){
@@ -81,21 +82,25 @@ export async function requestPowerdown(profile,timeout=35000){
 }
 
 export async function withPowerLock(profile,operation,timeout=90000){
- const file=path.join(path.dirname(profile.guest.identity),'power.lock');const token=randomBytes(16).toString('hex'),deadline=Date.now()+timeout;
- await mkdir(path.dirname(file),{recursive:true});
- while(true){
-  try{await writeFile(file,JSON.stringify({pid:process.pid,token}),{flag:'wx',mode:0o600});break;}
-  catch(error){
-   if(error.code!=='EEXIST')throw error;
-   let owner;try{owner=await readJson(file)}catch{}
-   const age=Date.now()-(await stat(file).catch(()=>({mtimeMs:Date.now()}))).mtimeMs;
-   if(owner&&!processAlive(owner.pid)&&age>1000){await unlink(file).catch(()=>{});continue;}
-   if(Date.now()>deadline)throw Error('另一个虚拟机电源操作尚未完成');
-   await pause(200);
-  }
- }
- try{return await operation();}
- finally{const owner=await readJson(file).catch(()=>null);if(owner?.token===token)await unlink(file).catch(()=>{});}
+ const directory=path.dirname(profile.guest.identity);
+ await mkdir(directory,{recursive:true});
+ const helper=spawn(profile.hostPython||'python',[fileURLToPath(new URL('./vm-power-lock.py',import.meta.url)),path.join(directory,'power.lock'),String(timeout)],{windowsHide:true,stdio:['pipe','pipe','ignore']});
+ helper.stdin.on('error',()=>{});
+ const closed=new Promise(resolve=>helper.once('close',resolve));
+ try{
+  await new Promise((resolve,reject)=>{
+   helper.once('error',reject);
+   createInterface({input:helper.stdout}).once('line',line=>line==='locked'?resolve():reject(Error('无法取得电源锁')));
+   closed.then(code=>reject(Error(code===2?'另一个虚拟机电源操作尚未完成':'电源锁进程未就绪')));
+  });
+  // Respect a live v1 owner during upgrades. Stale metadata is not a v2 lock.
+  const oldFile=path.join(directory,'power.lock');
+  let previous;
+  try{previous=await readJson(oldFile)}catch(error){if(!(error instanceof SyntaxError))throw error;}
+  if(previous?.lockVersion!==2&&previous&&processAlive(previous.pid))throw Error('旧版后台正在控制电源，请等待其操作完成');
+  await writeFile(oldFile,JSON.stringify({pid:helper.pid,lockVersion:2}),{mode:0o600});
+  return await operation();
+ }finally{helper.stdin.end();await closed;}
 }
 
 export async function foreignConnections(profile,owned){
@@ -123,15 +128,23 @@ export class VMPower{
   const actual=await probePower(profile);
   return {...actual,...(this.phase?{state:this.phase}:{}),manualOff:!!policy.manualOff,memoryMiB:profile.vm.memoryMiB,cpus:profile.vm.cpus,connections:this.connections(),updatedAt:Date.now()};
  }
- connections(){return [...this.bridges.values()].filter(b=>!b.closed).map(b=>({scope:b.cfg.scope,project:b.cfg.project,title:path.basename(b.cfg.localRoot),connectionId:b.connectionId,busy:!!b.chats?.size||!!b.native?.foreground?.size}));}
+ connections(){
+  return [...this.bridges.values()].filter(b=>!b.closed).map(bridge=>{
+   const {cfg}=bridge;
+   let chatTitle;
+   try{chatTitle=this.titleOf?.(cfg.sessionId);}catch{/* Archived chats use the stable short ID. */}
+   return {scope:cfg.scope,project:cfg.project,title:path.basename(cfg.localRoot),chatTitle,
+    connectionId:bridge.connectionId,busy:!!bridge.chats?.size||bridge.activeTools>0||!!bridge.native?.foreground?.size};
+  });
+ }
  exclusive(fn,timeout){const task=this.queue.catch(()=>{}).then(async()=>{const profile=await loadPowerProfile(this.base);this.profile=profile;return withPowerLock(profile,()=>fn(profile),timeout)});this.queue=task;return task;}
  async connect(intent,operation){return this.exclusive(async profile=>{
   const policy=await readJson(this.policyFile(),{});
   if(!mayWake(policy,intent))throw Error('虚拟机已手动关闭。请点击“启动虚拟机”或“接入 Claude”，后台恢复不会自动唤醒。');
   this.phase='starting';
   try{
-   if(intent.explicitWake)await atomicJson(this.policyFile(),{manualOff:false,changedAt:Date.now()});
-   await this.ensureRunning(profile);
+   await this.ensureRunning(profile,{explicitWake:intent.explicitWake===true});
+   if(intent.explicitWake&&policy.manualOff)await atomicJson(this.policyFile(),{manualOff:false,changedAt:Date.now()});
    this.phase=null;return await operation(profile);
   }finally{this.phase=null;}
  });}
@@ -142,7 +155,8 @@ export class VMPower{
   const initial=await probePower(profile);
   if(initial.state==='unknown')throw Error(initial.error);
   const current=this.connections();
-  if(current.length&&!request.allOwned&&!sameConnections(request.confirmedConnections,current))return {status:'needs-confirmation',connections:current};
+  const newlyBusy=Array.isArray(request.confirmedBusy)&&current.some(item=>item.busy&&!request.confirmedBusy.includes(item.connectionId));
+  if(current.length&&!request.allOwned&&(newlyBusy||!sameConnections(request.confirmedConnections,current)))return {status:'needs-confirmation',connections:current};
   // Persist before teardown: stale reconnect requests must not wake it back up.
   await atomicJson(this.policyFile(),{manualOff:true,changedAt:Date.now()});this.phase='stopping';
   try{

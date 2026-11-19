@@ -95,7 +95,7 @@ print('ready')`;
 }
 
 export class VMBridge{
- constructor(cfg){this.cfg=validateVMConfig(cfg);this.children=new Set();this.queue=Promise.resolve();this.closed=false;this.connectionId=randomBytes(16).toString('hex');this.stateWrites=Promise.resolve();this.chats=new Map();}
+ constructor(cfg){this.cfg=validateVMConfig(cfg);this.children=new Set();this.activeTools=0;this.closed=false;this.connectionId=randomBytes(16).toString('hex');this.stateWrites=Promise.resolve();this.chats=new Map();}
  openChat(){
   const id=randomBytes(16).toString('hex'),stdout=new PassThrough();let resolve,reject,started=false;
   const done=new Promise((a,b)=>{resolve=a;reject=b});done.catch(()=>{});
@@ -140,13 +140,24 @@ export class VMBridge{
    if(previous.fingerprint!==fingerprint)return {id:frame.id,ok:false,error:'Request ID reused with different input'};
    return previous.response||{id:frame.id,ok:false,error:'Previous execution outcome is unknown; inspect files before retrying'};
   }
-  await atomicJson(file,{fingerprint,status:'running'});await this.state('running',{operation:frame.operation,requestId:frame.id});
-  let response;
+  if(this.closed)return {id:frame.id,ok:false,error:'Local VM is offline'};
+  this.activeTools++;
   try{
-   response={id:frame.id,ok:true,result:await this.native.request(frame.arguments)};
-  }catch{response={id:frame.id,ok:false,error:'The local VM did not confirm this operation. It may have partially executed; check the workspace before retrying.'};}
-  await atomicJson(file,{fingerprint,status:'completed',response});await this.state(this.closed?'offline':'connected');
-  return response;
+   await atomicJson(file,{fingerprint,status:'running'});
+   if(!this.closed)await this.state('running',{operation:frame.operation,requestId:frame.id});
+   let response;
+   try{
+    if(this.closed)throw Error('Disconnected');
+    response={id:frame.id,ok:true,result:await this.native.request(frame.arguments)};
+   }catch{
+    response={id:frame.id,ok:false,error:'The local VM did not confirm this operation. It may have partially executed; check the workspace before retrying.'};
+   }
+   await atomicJson(file,{fingerprint,status:'completed',response});
+   return response;
+  }finally{
+   this.activeTools--;
+   if(!this.closed&&this.activeTools===0)await this.state('connected');
+  }
  }
  async start(){
   await mkdir(this.cfg.stateDirectory,{recursive:true});
@@ -202,14 +213,18 @@ export class VMBridge{
   this.stopPromise=this.shutdown();return this.stopPromise;
  }
  async shutdown(){
-  await this.state('disconnecting').catch(()=>{});
+  if(this.ownsLease)await this.state('disconnecting').catch(()=>{});
   if(liveBridges.get(this.cfg.scope)===this)liveBridges.delete(this.cfg.scope);
   for(const chat of [...this.chats.values()])chat.finish(1,'虚拟机桥接已断开，本轮结果可能尚未确认');
   clearInterval(this.controlTimer);clearInterval(this.heartbeat);
   await this.native?.stop();
   for(const child of this.children)child.kill();
-  if(this.ownsLease){const lease=await readJson(this.lease);if(lease?.pid===process.pid&&lease.scope===this.cfg.scope)await unlink(this.lease).catch(()=>{});this.ownsLease=false;}
-  await this.state('offline',this.failure?{error:this.failure}:{}).catch(()=>{});
+  if(this.ownsLease){
+   await this.state('offline',this.failure?{error:this.failure}:{}).catch(()=>{});
+   const lease=await readJson(this.lease);
+   if(lease?.pid===process.pid&&lease.scope===this.cfg.scope)await unlink(this.lease).catch(()=>{});
+   this.ownsLease=false;
+  }
  }
 }
 

@@ -5,7 +5,7 @@ import {createInterface} from 'node:readline';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {VMPower,verifiedQmp,requestPowerdown,mayWake,sameConnections} from '../vm-power.mjs';
+import {VMPower,verifiedQmp,requestPowerdown,withPowerLock,mayWake,sameConnections} from '../vm-power.mjs';
 import {VMManager} from '../vm-manager.mjs';
 
 async function fixture(t,{stopWorks=true,wrongIdentity=false}={}){
@@ -52,7 +52,9 @@ test('active connection review cannot stop an unreviewed new connection',async t
  const review=await power.shutdown();assert.equal(review.status,'needs-confirmation');assert.deepEqual(stopped,[]);
  bridges.set('b',bridge('b'));
  assert.equal((await power.shutdown({confirmedConnections:['a']})).status,'needs-confirmation');assert.deepEqual(stopped,[]);
- const result=await power.shutdown({confirmedConnections:['a','b']});assert.equal(result.status,'stopped');assert.deepEqual(stopped.sort(),['a','b']);
+ bridges.get('b').chats=new Map([['turn',{}]]);
+ assert.equal((await power.shutdown({confirmedConnections:['a','b'],confirmedBusy:[]})).status,'needs-confirmation');
+ const result=await power.shutdown({confirmedConnections:['a','b'],confirmedBusy:['b']});assert.equal(result.status,'stopped');assert.deepEqual(stopped.sort(),['a','b']);
  assert.equal(JSON.parse(await readFile(power.policyFile(),'utf8')).manualOff,true);
  const otherBase=path.join(f.base,'other-profile');await mkdir(path.join(otherBase,'DSH-Remote-Claude'),{recursive:true});
  await writeFile(path.join(otherBase,'DSH-Remote-Claude','vm-executor.json'),JSON.stringify(f.profile));
@@ -71,4 +73,46 @@ test('backend startup inspects status without booting VM or replaying previous r
  const id='b'.repeat(32);await writeFile(path.join(controls,id+'.json'),JSON.stringify({id,action:'start',createdAt:manager.startedAt-1}));
  await manager.tick();assert.equal(boots,0);assert.equal(f.commands.includes('system_powerdown'),false);
  await manager.stop();
+});
+
+test('an incomplete legacy lock recovers; concurrent operations still exclude one another',async t=>{
+ const f=await fixture(t);
+ await writeFile(path.join(f.privateDir,'power.lock'),'');
+ let entered;
+ const acquired=new Promise(resolve=>{entered=resolve});
+ let release;
+ const hold=new Promise(resolve=>{release=resolve});
+ const owner=withPowerLock(f.profile,async()=>{entered();await hold});
+ await acquired;
+ try{await assert.rejects(withPowerLock(f.profile,()=>assert.fail('second owner'),100),/电源操作/);}
+ finally{release();await owner;}
+ assert.equal(await withPowerLock(f.profile,async()=>42),42);
+});
+
+test('failed explicit boot preserves the shutdown decision for an automatic retry',async t=>{
+ const f=await fixture(t);
+ let boots=0;
+ const power=new VMPower(f.base,new Map(),async()=>{boots++;throw Error('boot failed')});
+ const policy={manualOff:true,changedAt:100};
+ const file=path.join(f.privateDir,'power-policy.json');
+ await writeFile(file,JSON.stringify(policy));
+ await assert.rejects(power.start({createdAt:101}),/boot failed/);
+ assert.deepEqual(JSON.parse(await readFile(file)),policy);
+ await assert.rejects(power.connect({createdAt:102,explicitWake:false},async()=>{}),/手动关闭/);
+ assert.equal(boots,1);
+});
+
+test('two requests arriving during a cold start share the same connection attempt',async()=>{
+ const manager=new VMManager(os.tmpdir());
+ const cfg={scope:'a'.repeat(32),localRoot:path.resolve('project')};
+ let attempts=0,release;
+ const ready=new Promise(resolve=>{release=resolve});
+ manager.startBridge=async()=>{attempts++;return ready};
+ const first=manager.ensureBridge(cfg,{});
+ const second=manager.ensureBridge(cfg,{});
+ assert.equal(attempts,1);
+ assert.throws(()=>manager.ensureBridge({...cfg,localRoot:path.resolve('other')},{}),/其他目录/);
+ release({connectionId:'shared'});
+ assert.equal(await first,await second);
+ assert.equal(manager.opening.size,0);
 });

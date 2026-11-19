@@ -91,6 +91,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
 .dsh-claude-action{font:inherit;font-size:12px;line-height:1.5;color:var(--cw-muted);background:transparent;border:0;border-radius:6px;padding:4px 7px;cursor:pointer;white-space:nowrap}.dsh-claude-action:hover{background:var(--cw-soft);color:var(--cw-text)}[data-dsh-claude-control=open]{font-size:11px;opacity:.8}[data-dsh-claude-control=add]{font-size:12px}[data-dsh-claude-control=commands]{display:flex;align-items:center;flex-wrap:wrap;gap:3px;flex:none;padding:6px 8px;color:var(--cw-muted);background:var(--cw-bg);border-bottom:1px solid var(--cw-border);font:inherit;font-size:12px}[data-dsh-claude-control=commands]>details{position:relative;margin-right:8px}[data-dsh-claude-control=commands] summary{cursor:pointer;font-weight:550;color:var(--cw-text);list-style:none;padding:4px 6px;border-radius:6px}[data-dsh-claude-control=commands] summary:hover{background:var(--cw-soft)}[data-dsh-claude-control=commands] details[open]{display:grid;gap:3px}[data-dsh-claude-control=commands] details button{text-align:left}[data-dsh-claude-control=commands] button[aria-pressed=true]{color:var(--cw-blue);background:color-mix(in srgb,var(--cw-blue) 8%,transparent)}[data-dsh-claude-control=commands]>span{font-size:10px;color:var(--cw-muted)}
 .dsh-quota{position:fixed;left:16px;bottom:56px;z-index:25;font:inherit;font-size:11px;line-height:1.5;color:var(--cw-text)}.dsh-quota summary{cursor:pointer;list-style:none;background:var(--cw-surface);color:var(--cw-muted);border:1px solid var(--cw-border);border-radius:7px;padding:4px 9px}.dsh-quota summary:hover{background:var(--cw-soft);color:var(--cw-text)}.dsh-quota section{position:absolute;left:0;bottom:calc(100% + 9px);width:min(260px,80vw);padding:16px;background:var(--cw-bg);color:var(--cw-text);border:1px solid var(--cw-border);border-radius:12px;box-shadow:0 8px 28px #00000016}.dsh-quota section>*{display:block}.dsh-quota section strong{font-size:12px;font-weight:550;margin-top:14px}.dsh-quota progress{width:100%;height:5px;accent-color:var(--cw-blue);margin:7px 0}.dsh-quota small{color:var(--cw-muted);font-size:10.5px}.dsh-quota button{margin-top:10px;color:var(--cw-blue);font:inherit;background:transparent;border:0;cursor:pointer}
 
+.cw-power-copy summary{list-style:none;cursor:pointer}.cw-power-copy summary::-webkit-details-marker{display:none}.cw-power-copy summary small{font-size:11px;font-weight:400;color:var(--cw-muted)}.cw-power-copy[open] summary>.cw-icon{transform:rotate(90deg)}.cw-power-confirm li{align-items:center;flex-wrap:wrap}.cw-power-confirm li code{font:11px var(--cw-mono)}.cw-power-confirm [data-busy=true]{color:var(--cw-blue);font-weight:600}.cw-recovery .cw-btn{margin-top:8px}.cw-advanced .cw-fields{margin-top:10px}.cw-event-detail,.cw-connect-caption{font-size:12px}
 .cw-event[data-state=unconfirmed] .cw-event-result{color:var(--cw-faint)}
 .cw-power{border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-surface);padding:14px}.cw-power-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.cw-power-symbol{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:var(--cw-soft);color:var(--cw-muted);flex:none}.cw-power-copy{flex:1;min-width:120px}.cw-power-title{display:flex;gap:8px;align-items:center;font-size:12px;font-weight:550}.cw-power-status{font-size:10px;font-weight:400;color:var(--cw-muted)}.cw-power-status[data-state=running]{color:var(--cw-green)}.cw-power-copy p,.cw-power-note{font-size:10.5px;line-height:1.6;color:var(--cw-muted);margin:3px 0 0}.cw-power-note{margin-top:10px;color:var(--cw-faint)}.cw-power-confirm{margin-top:12px;padding-top:12px;border-top:1px solid var(--cw-border);font-size:11px}.cw-power-confirm p{margin:0 0 8px;line-height:1.65}.cw-power-confirm ul{list-style:none;margin:0 0 10px;padding:0;max-height:130px;overflow:auto}.cw-power-confirm li{display:flex;justify-content:space-between;gap:10px;padding:4px 0;color:var(--cw-muted);overflow-wrap:anywhere}.cw-power-confirm .cw-primary{background:var(--cw-red);border-color:transparent;color:#fff}.cw-power .cw-error{margin-top:10px}
 `;
@@ -123,15 +124,65 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
    const raw=String(message),lines=raw.trim().split('\n'),last=lines.at(-1).replace(/^(?:[A-Za-z]*Error):\s*/,'');
    return h('div',{className:'cw-error',role:'alert'},h(Icon,{name:'alert',size:17}),h('div',null,h('strong',null,'操作未完成'),h('p',null,last.slice(0,220)),(lines.length>1||last.length>220)&&h('details',null,h('summary',null,'查看错误详情'),h('pre',null,raw))));
   }
-  function useWorkspaceStatus(rpc,cfg,sessionId,enabled){
-   const [state,setState]=React.useState({status:'idle',events:[],artifacts:[],approvals:[]}),[error,setError]=React.useState('');
-   const busy=React.useRef(false),refreshRef=React.useRef(async()=>{});
+  const statusStores=new Map();
+  const emptySnapshot=()=>({activity:{status:'idle',events:[],artifacts:[],approvals:[]},power:{state:'loading',connections:[]},error:''});
+  function workbenchStore(sessionId){
+   if(statusStores.has(sessionId))return statusStores.get(sessionId);
+   const subscribers=new Set();
+   let snapshot=emptySnapshot(),timer,pending;
+   const visible=()=>!document.hidden&&[...subscribers].find(client=>client.visible);
+   function schedule(){
+    clearTimeout(timer);
+    if(!visible())return;
+    const busy=['preparing','running'].includes(snapshot.activity.status)||['starting','stopping'].includes(snapshot.power.state);
+    timer=setTimeout(refresh,busy?2000:12000);
+   }
+   function refresh(){
+    clearTimeout(timer);
+    if(pending)return pending;
+    const client=visible();
+    if(!client)return Promise.resolve();
+    pending=Promise.resolve().then(()=>client.read()).then(result=>{
+     snapshot={...result,error:''};
+    }).catch(error=>{snapshot={...snapshot,error:error.message}}).finally(()=>{
+     pending=null;
+     for(const entry of subscribers)entry.notify(snapshot);
+     schedule();
+    });
+    return pending;
+   }
+   const store={refresh,invalidate:async()=>{if(pending)await pending;return refresh()},subscribe(client){
+    subscribers.add(client);client.notify(snapshot);
+    if(subscribers.size===1)document.addEventListener('visibilitychange',refresh);
+    return ()=>{
+     subscribers.delete(client);
+     if(!subscribers.size){
+      clearTimeout(timer);document.removeEventListener('visibilitychange',refresh);statusStores.delete(sessionId);
+     }else schedule();
+    };
+   },schedule};
+   statusStores.set(sessionId,store);return store;
+  }
+  function useWorkspaceStatus(rpc,sessionId,enabled,panel){
+   const [snapshot,setSnapshot]=React.useState(emptySnapshot);
+   const rpcRef=React.useRef(rpc),storeRef=React.useRef();rpcRef.current=rpc;
    React.useEffect(()=>{
-    let active=true;setState({status:'idle',events:[],artifacts:[],approvals:[]});setError('');
-    async function refresh(){if(!enabled||!cfg.host||busy.current)return;busy.current=true;try{const next=await rpc({...cfg,action:'agent-status'});if(active){setState(next);setError('')}}catch(e){if(active)setError(e.message)}finally{busy.current=false}}
-    refreshRef.current=refresh;void refresh();const timer=setInterval(refresh,2500);return()=>{active=false;clearInterval(timer)};
-   },[sessionId,cfg.host,cfg.project,cfg.vmTools,enabled]);
-   return {state,error,refresh:()=>refreshRef.current()};
+    setSnapshot(emptySnapshot());
+    if(!enabled||!panel.current)return;
+    const store=workbenchStore(sessionId);storeRef.current=store;
+    const client={read:()=>rpcRef.current({action:'workbench-status'}),notify:setSnapshot,visible:false};
+    const unsubscribe=store.subscribe(client);
+    const observer=new IntersectionObserver(entries=>{
+     client.visible=entries.some(entry=>entry.isIntersecting);
+     if(client.visible)void store.refresh();else store.schedule();
+    });
+    observer.observe(panel.current);
+    return ()=>{observer.disconnect();unsubscribe();storeRef.current=null};
+   },[sessionId,enabled]);
+   return {state:snapshot.activity,power:snapshot.power,error:snapshot.error,refresh:async()=>{
+    const store=storeRef.current;
+    if(store)await store.invalidate();
+   }};
   }
   async function syncRequest(ctx,session,request,progress){
    const shells=await ctx.webTerminals.launchShells(session,new AbortController().signal);
@@ -275,33 +326,34 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     })):h('div',{className:'cw-empty'},h('span',{className:'cw-empty-icon'},h(Icon,{name:'terminal',size:22})),h('div',null,h('strong',null,'从左侧开始对话'),h('p',null,'发送消息或添加附件，运行进度会显示在这里。'))),
     rows.length>4&&h('button',{className:'cw-text-button cw-history-toggle',onClick:()=>expand(!expanded),'aria-expanded':expanded},expanded?'收起活动':'查看全部 '+rows.length+' 项',h(Icon,{name:'chevron',size:13})),
     (state.artifacts||[]).length>0&&h('div',{className:'cw-artifacts'},h('h4',null,'成果文件'),...(state.artifacts||[]).map(item=>h('article',{className:'cw-artifact',key:item.id},h(Icon,{name:'file',size:19}),h('div',null,h('strong',null,item.name),h('small',null,(item.size<1024?item.size+' B':Math.round(item.size/1024)+' KB')+' · 已保存')),h('button',{className:'cw-btn cw-small',onClick:()=>act('agent-open',{artifactId:item.id})},'打开')))),
-    h('footer',{className:'cw-activity-foot'},h(Icon,{name:cfg.vmTools?'folder':'cloud',size:13}),cfg.vmTools?'文件修改直接保存到本机项目':'成果文件可回传到本机',h('button',{className:'cw-text-button',onClick:onOpenTerminal},'详细输出',h(Icon,{name:'arrow',size:12}))));
+    h('footer',{className:'cw-activity-foot'},h(Icon,{name:cfg.vmTools?'folder':'cloud',size:13}),cfg.vmTools?'文件修改直接保存到本机项目':'成果文件可回传到本机',null));
   }
-  function PowerControls({rpc,sessionId,onBusyChange,disabled}){
-   const [power,setPower]=React.useState({state:'loading',connections:[]}),[busy,setBusy]=React.useState(''),[review,setReview]=React.useState(null),[error,setError]=React.useState('');
+  function PowerControls({rpc,power,refresh,onBusyChange,disabled}){
+   const [busy,setBusy]=React.useState(''),[review,setReview]=React.useState(null),[error,setError]=React.useState('');
    const guard=React.useRef(false);
-   React.useEffect(()=>{let active=true,pending=false;async function refresh(){if(pending||guard.current)return;pending=true;try{const value=await rpc({action:'vm-power-status'});if(active)setPower(value)}catch(e){if(active)setError(e.message)}finally{pending=false}}void refresh();const timer=setInterval(refresh,4000);return()=>{active=false;clearInterval(timer)}},[sessionId]);
-   async function operate(action,confirmedConnections){
+   const cancelButton=React.useRef(null);
+   React.useEffect(()=>{if(review)cancelButton.current?.focus()},[review]);
+   async function operate(action,reviewed){
     if(guard.current||disabled)return;guard.current=true;setBusy(action);onBusyChange(true);setError('');
     try{
-     const result=await rpc({action:'vm-power-'+action,...(confirmedConnections?{confirmedConnections}:{})});
+     const result=await rpc({action:'vm-power-'+action,...(reviewed?{confirmedConnections:reviewed.map(c=>c.connectionId),confirmedBusy:reviewed.filter(c=>c.busy).map(c=>c.connectionId)}:{})});
      if(result.status==='needs-confirmation'){setReview(result.connections);return;}
-     setReview(null);setPower({...result.power,controlReady:true});
+     setReview(null);await refresh();
     }catch(e){setError(e.message)}finally{guard.current=false;setBusy('');onBusyChange(false)}
    }
    const phase=busy==='start'?'starting':busy==='stop'?'stopping':power.state;
    const labels={loading:'读取中',running:'已启动',stopped:'已关闭',starting:'正在启动',stopping:'正在关闭',unknown:'状态未知',unavailable:'未配置'};
    const running=phase==='running',transition=!!busy||['starting','stopping','loading'].includes(phase);
-   const groups={};for(const item of review||[]){const name=item.title||item.project;groups[name]=(groups[name]||0)+1;}
+
    return h('section',{className:'cw-power','aria-label':'虚拟机电源'},
-    h('div',{className:'cw-power-row'},h('span',{className:'cw-power-symbol'},h(Icon,{name:'power',size:18})),h('div',{className:'cw-power-copy'},
-     h('div',{className:'cw-power-title'},'执行虚拟机',h('span',{className:'cw-power-status','data-state':phase,role:'status'},labels[phase]||'状态未知')),
-     h('p',null,running?((power.connections?.length||0)+' 个会话连接 · '+((power.memoryMiB||2048)/1024)+' GB 配置 · '+(power.cpus||2)+' 核'):phase==='stopped'?'不占用虚拟机运行资源':'正在读取本机执行环境状态')),
+    h('div',{className:'cw-power-row'},h('span',{className:'cw-power-symbol'},h(Icon,{name:'power',size:18})),h('details',{className:'cw-power-copy'},
+     h('summary',{className:'cw-power-title'},'执行虚拟机',h('span',{className:'cw-power-status','data-state':phase,role:'status'},labels[phase]||'状态未知'),running&&h('small',null,'连接 '+(power.connections?.length||0)),h(Icon,{name:'chevron',size:12})),
+     h('p',null,power.memoryMiB?((power.memoryMiB/1024)+' GB 配置，'+power.cpus+' 核。关机保留项目文件和聊天记录。'):'接入时按需启动，关机保留项目文件和聊天记录。')),
      h('button',{className:'cw-btn cw-small',disabled:disabled||transition||!power.controlReady||['unknown','unavailable'].includes(phase),onClick:()=>operate(running?'stop':'start')},transition?h('span',{className:'cw-spinner'}):null,running?'关闭虚拟机':phase==='stopping'?'正在关闭…':phase==='starting'?'正在启动…':'启动虚拟机')),
-    h('p',{className:'cw-power-note'},power.controlReady?'关机保留文件与聊天；启动或接入时按需开启。':'重启 DSH 后即可使用电源控制。'),
+    !power.controlReady&&phase!=='loading'&&h('p',{className:'cw-power-note'},'请检查执行器配置，或重启 DSH 加载电源服务。'),
     review&&h('div',{className:'cw-power-confirm',role:'alert'},h('p',null,'将断开 '+review.length+' 个会话的本机连接。正在运行的命令会停止，已保存文件与聊天记录保留。'),
-     h('ul',null,...Object.entries(groups).map(([name,count])=>h('li',{key:name},h('span',null,name),h('span',null,count+' 个会话')))),
-     h('div',{className:'cw-actions'},h('button',{className:'cw-btn cw-small',disabled:!!busy,onClick:()=>setReview(null)},'取消'),h('button',{className:'cw-btn cw-small cw-primary',disabled:!!busy,onClick:()=>operate('stop',review.map(item=>item.connectionId))},'断开全部并关闭'))),
+     h('ul',null,...review.map(item=>h('li',{key:item.connectionId},h('strong',null,item.chatTitle||('会话 '+(item.scope||item.connectionId).slice(0,8))),h('small',null,item.title||item.project),h('span',{'data-busy':!!item.busy},item.busy?'任务执行中':'已连接')))),
+     h('div',{className:'cw-actions'},h('button',{className:'cw-btn cw-small',ref:cancelButton,disabled:!!busy,onClick:()=>setReview(null)},'取消'),h('button',{className:'cw-btn cw-small cw-primary',disabled:!!busy,onClick:()=>operate('stop',review)},'断开全部并关闭'))),
     h(ErrorNotice,{message:error||power.error}));
   }
   function Body({useTabInfo,launch,workspace,rpc,sessionId}){
@@ -310,20 +362,27 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
    function defaults(){return {host:'',project:workspace?.remoteName||'my-test',identity:'',structuredChat:true,vmTools:true}}
    const [bound,setBound]=React.useState(false),[ready,setReady]=React.useState(false),[settingsOpen,showSettings]=React.useState(false);
    const [notice,notify]=React.useState(null),[working,setWorking]=React.useState(''),[syncOpen,showSync]=React.useState(false);
-   const [powerBusy,setPowerBusy]=React.useState(false);
-   const actionGuard=React.useRef(false);
-   React.useEffect(()=>{let active=true;setReady(false);notify(null);void rpc({action:'session-config'}).then(result=>{
-    if(!active)return;setBound(!!result.bound);showSettings(!result.bound);
-    set(previous=>result.bound?{...previous,...result.route}:{...previous,structuredChat:true,vmTools:true,desktopTools:false});setReady(true);
-   }).catch(error=>{if(active)notify({kind:'error',text:error.message})});return()=>{active=false};},[sessionId,workspace?.workspaceId]);
-   const {state,error,refresh}=useWorkspaceStatus(rpc,cfg,sessionId,ready&&bound&&!syncOpen);
+   const [advanced,showAdvanced]=React.useState(false);
+   const [powerBusy,setPowerBusy]=React.useState(false),[configAttempt,retryConfig]=React.useReducer(n=>n+1,0),[configError,setConfigError]=React.useState('');
+   const actionGuard=React.useRef(false),panel=React.useRef(null);
+   React.useEffect(()=>{
+    let active=true;setReady(false);setBound(false);notify(null);setConfigError('');showAdvanced(false);
+    void rpc({action:'session-config'}).then(result=>{
+     if(!active)return;
+     let saved={};try{saved=JSON.parse(localStorage.getItem(workspace?id+':'+workspace.workspaceId:id))||{}}catch{}
+     setBound(!!result.bound);showSettings(!result.bound);
+     set({...defaults(),...saved,...(result.bound?result.route:{structuredChat:true,vmTools:true,desktopTools:false})});setReady(true);
+    }).catch(error=>{if(active)setConfigError(error.message)});
+    return()=>{active=false};
+   },[sessionId,workspace?.workspaceId,configAttempt]);
+   const {state,power,error,refresh}=useWorkspaceStatus(rpc,sessionId,ready&&!syncOpen,panel);
    React.useEffect(()=>{if(notice?.kind!=='success')return;const timer=setTimeout(()=>notify(null),5000);return()=>clearTimeout(timer)},[notice]);
    if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,back:()=>showSync(false),terminal:()=>tab?.actions.openTab('terminal',{})});
    async function start(op){
     if(actionGuard.current||powerBusy)return;
     actionGuard.current=true;setWorking(op);notify(null);
     try{
-     if(!/^[\w][\w.@-]*$/.test(cfg.host||'')||!/^\w[\w-]{0,47}$/.test(cfg.project||'')||/[\r\n\x00]/.test(cfg.identity||'')){showSettings(true);throw Error('请填写有效的 SSH 主机和远程工作区。')}
+     if(!/^[\w][\w.@-]*$/.test(cfg.host||'')||!/^\w[\w-]{0,47}$/.test(cfg.project||'')||/[\r\n\x00]/.test(cfg.identity||'')){showSettings(true);if(!/^\w[\w-]{0,47}$/.test(cfg.project||''))showAdvanced(true);throw Error('请填写有效的 SSH 主机和远程工作区。')}
      localStorage.setItem(workspace?id+':'+workspace.workspaceId:id,JSON.stringify({host:cfg.host,project:cfg.project,identity:cfg.identity,remoteModel:cfg.remoteModel}));
      if(op==='sync'){showSync(true);return;}
      const connected=await launch(tab,op,cfg);
@@ -337,43 +396,47 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     try{await rpc({...cfg,action:'vm-disconnect'});await refresh();notify({kind:'success',text:'已断开本机执行连接，聊天记录已保留。'})}
     catch(e){notify({kind:'error',text:e.message})}finally{actionGuard.current=false;setWorking('')}
    }
-   const phase=!ready?'loading':working==='claude'?'connecting':cfg.vmTools?(state.vm?.status||'offline'):'legacy';
+   const phase=configError?'failed':!ready?'loading':working==='claude'?'connecting':cfg.vmTools?(state.vm?.status||'offline'):'legacy';
    const phaseLabels={loading:'读取中',connecting:'连接中',connected:'已连接',running:'运行中',offline:'未连接',failed:'连接异常',legacy:'服务器模式'};
    const connected=['connected','running'].includes(phase),title=workspace?.title||'Claude 工作区';
    const modelNames={'':'服务器默认',sonnet:'Sonnet',opus:'Opus',haiku:'Haiku'};
    const settings=()=>h('details',{className:'cw-settings',open:settingsOpen,onToggle:e=>showSettings(e.currentTarget.open)},
-    h('summary',null,h('span',{className:'cw-settings-label'},h(Icon,{name:'settings',size:16}),bound?'连接设置':'设置连接'),h('span',{className:'cw-settings-value'},bound?cfg.host:'SSH 与模型'),h(Icon,{name:'chevron',size:14,className:'cw-settings-chevron'})),
+    h('summary',null,h('span',{className:'cw-settings-label'},h(Icon,{name:'settings',size:16}),bound?'连接设置':'设置连接'),h('span',{className:'cw-settings-value'},bound?cfg.host:'SSH 主机'),h(Icon,{name:'chevron',size:14,className:'cw-settings-chevron'})),
     h('div',{className:'cw-settings-body'},
      h('div',{className:'cw-fields'},
-      h('label',null,h('span',null,'SSH 主机'),h('input',{value:cfg.host||'',readOnly:bound,placeholder:'例如 my-server 或 user@host',spellCheck:false,onChange:e=>set({...cfg,host:e.target.value})})),
-      h('label',null,h('span',null,'启动模型'),h('span',{className:'cw-select'},h('select',{value:cfg.remoteModel||'',disabled:bound,onChange:e=>set({...cfg,remoteModel:e.target.value})},...Object.entries(modelNames).map(([value,text])=>h('option',{key:value,value},text))),h(Icon,{name:'chevron',size:13}))),
-      h('label',{className:'cw-field-full'},h('span',null,'远程工作区'),h('input',{value:cfg.project||'',readOnly:bound,placeholder:'项目在服务器上的名称',spellCheck:false,onChange:e=>set({...cfg,project:e.target.value})}))),
-     h('details',{className:'cw-advanced'},h('summary',null,'SSH 私钥',h('span',null,'可选')),h('label',null,h('span',{className:'cw-sr-only'},'本地私钥文件路径'),h('input',{value:cfg.identity||'',readOnly:bound,placeholder:'使用 SSH 配置时留空',spellCheck:false,onChange:e=>set({...cfg,identity:e.target.value})}))),
-     h('p',{className:'cw-field-hint'},bound?'本聊天的工作区已固定。运行中可在终端使用 /model 切换模型。':'支持本机 SSH 别名。连接后，当前文件夹会与本聊天的执行环境关联。'),
-     cfg.vmTools&&state.vm?.executorVersion&&h('small',{className:'cw-runtime-note'},'执行器 CC '+state.vm.executorVersion+' · 独立配置 · 未登录')));
+      h('label',{className:'cw-field-full'},h('span',null,'SSH 主机'),h('input',{value:cfg.host||'',readOnly:bound,placeholder:'例如 my-server 或 user@host',spellCheck:false,onChange:e=>set({...cfg,host:e.target.value})})),
+     ),
+     h('details',{className:'cw-advanced',open:advanced,onToggle:e=>showAdvanced(e.currentTarget.open)},h('summary',null,'更多设置',h('span',null,'远程目录、模型、私钥')),h('div',{className:'cw-fields'},
+      h('label',null,h('span',null,'远程工作区'),h('input',{value:cfg.project||'',readOnly:bound,placeholder:'服务器上的项目名称',spellCheck:false,onChange:e=>set({...cfg,project:e.target.value})})),h('label',null,h('span',null,'启动模型'),h('span',{className:'cw-select'},h('select',{value:cfg.remoteModel||'',disabled:bound,onChange:e=>set({...cfg,remoteModel:e.target.value})},...Object.entries(modelNames).map(([value,text])=>h('option',{key:value,value},text))),h(Icon,{name:'chevron',size:13}))),
+      h('label',null,h('span',null,'SSH 私钥'),h('input',{value:cfg.identity||'',readOnly:bound,placeholder:'使用 SSH 配置时留空',spellCheck:false,onChange:e=>set({...cfg,identity:e.target.value})})))),
+     h('p',{className:'cw-field-hint'},bound?'本聊天的工作区已固定。运行中可在终端使用 /model 切换模型。' :'支持本机 SSH 别名或 user@host。'),
+     bound&&cfg.vmTools&&state.vm?.executorVersion&&h('small',{className:'cw-runtime-note'},'执行器 CC '+state.vm.executorVersion+' · 独立配置 · 未登录')));
    const failure=notice?.kind==='error'?notice.text:error||state.vm?.error||state.error;
-   return h('section',{className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify({kind:'success',text:'请将图片粘贴到左侧聊天输入框后发送。'});else void start('image')}}},
+   return h('section',{ref:panel,className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify({kind:'success',text:'请将图片粘贴到左侧聊天输入框后发送。'});else void start('image')}}},
     h('div',{className:'cw-content'},
      h('header',{className:'cw-project-header'},
       h('div',{className:'cw-eyebrow'},h('span',{className:'cw-brand'},h(Icon,{name:'spark',size:19}),h('span',null,'Claude 工作台')),h('span',{className:'cw-connection-badge','data-state':phase,role:'status'},h('i'),phaseLabels[phase]||'未连接')),
       h('h1',null,title),
       workspace&&h('div',{className:'cw-project-path'},h(Icon,{name:'folder',size:14}),h('span',{title:workspace.path},workspace.path)),
       ready&&h('div',{className:'cw-context-line'},h(Icon,{name:'cloud',size:14}),h('span',null,cfg.host||'待配置主机'),h('span',{className:'cw-separator'},'·'),h('span',null,cfg.vmTools?'本机项目':'服务器工作区'))),
-     !bound&&settings(),
+     configError&&h('div',{className:'cw-recovery'},h(ErrorNotice,{message:configError}),h('button',{className:'cw-btn',onClick:retryConfig},'重新读取连接配置')),
+     ready&&!bound&&settings(),
+     h(ErrorNotice,{message:failure}),
+     error&&h('button',{className:'cw-text-button',onClick:refresh},'刷新连接状态'),
      h('div',{className:'cw-connect-area'},
       h('div',{className:'cw-actions'},
-       h('button',{className:'cw-btn cw-primary','data-action':'connect',disabled:!ready||!!working||powerBusy,'aria-busy':working==='claude',onClick:()=>start('claude')},working==='claude'?h('span',{className:'cw-spinner'}):h(Icon,{name:'terminal',size:17}),working==='claude'?'正在连接…':connected?'打开 Claude 终端':bound?'继续会话':'接入 Claude',working!=='claude'&&h(Icon,{name:'arrow',size:15})),
+       h('button',{className:'cw-btn cw-primary','data-action':'connect',disabled:!ready||!!working||powerBusy,'aria-busy':working==='claude',onClick:()=>start('claude')},working==='claude'?h('span',{className:'cw-spinner'}):h(Icon,{name:'terminal',size:17}),working==='claude'?'正在连接…':connected?'打开 Claude 终端':bound&&cfg.vmTools&&['failed','offline'].includes(phase)?'重连当前会话':bound?'继续会话':'接入 Claude',working!=='claude'&&h(Icon,{name:'arrow',size:15})),
        h('button',{className:'cw-btn cw-secondary','data-action':'shell',disabled:!ready||!!working,onClick:()=>start('shell')},h(Icon,{name:'terminal',size:16}),'服务器终端')),
-      h('p',{className:'cw-connect-caption'},cfg.vmTools?'在左侧对话；在终端确认操作、查看完整输出。':'沿用本聊天的服务器环境，重连会恢复原会话。'),
+      h('p',{className:'cw-connect-caption'},cfg.vmTools?(bound?(connected?'在左侧对话，在右侧终端确认操作。':'重连后继续原会话，已保存的文件和对话可继续使用。'):'接入后，本聊天可读写上方的本机项目。'):'沿用本聊天的服务器环境。'),
       !cfg.vmTools&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('sync')},h(Icon,{name:'folder',size:14}),'文件同步',h(Icon,{name:'arrow',size:13})),
       !cfg.structuredChat&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('image')},'上传剪贴板图片')),
-     h(ErrorNotice,{message:failure}),
+
      notice?.kind==='success'&&h('div',{className:'cw-inline-message',role:'status'},h(Icon,{name:'check',size:15}),notice.text),
-     cfg.structuredChat&&h(AgentStatus,{rpc,cfg,state,refresh,onOpenTerminal:()=>start('claude')}),
+     ready&&bound&&cfg.structuredChat&&h(AgentStatus,{rpc,cfg,state,refresh,onOpenTerminal:()=>start('claude')}),
      bound&&settings(),
-     h(PowerControls,{rpc,sessionId,onBusyChange:setPowerBusy,disabled:!!working}),
+     ready&&h(PowerControls,{key:sessionId,rpc,power,refresh,onBusyChange:setPowerBusy,disabled:!!working}),
      !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
-     h('footer',{className:'cw-workspace-footer'},h('span',null,cfg.vmTools?'重连会恢复本聊天':'沿用原会话与执行环境'),cfg.vmTools&&bound&&connected&&h('button',{className:'cw-text-button cw-disconnect',disabled:!!working||!connected,onClick:disconnect},h(Icon,{name:'link',size:13}),working==='disconnect'?'正在断开…':'断开连接'))));
+     h('footer',{className:'cw-workspace-footer'},bound&&h('span',null,cfg.vmTools?'重连会恢复本聊天':'沿用原会话与执行环境'),cfg.vmTools&&bound&&connected&&h('button',{className:'cw-text-button cw-disconnect',disabled:!!working||!connected,onClick:disconnect},h(Icon,{name:'link',size:13}),working==='disconnect'?'正在断开…':'断开连接'))));
   }
 
   function apply(ctx){

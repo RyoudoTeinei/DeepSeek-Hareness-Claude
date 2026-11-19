@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {resolveRoute} from '../session-binding.mjs';
+import {resolveRoute,bindRoute,storedRoute} from '../session-binding.mjs';
 import {titleForRequest,installTitleRepair} from '../session-title.mjs';
 import {stream} from '../index.js';
 
@@ -28,4 +28,15 @@ test('title repair refreshes only this plugin’s generated placeholder, never a
  const ctx={on(){},sessions:{list:()=>sessions},sessionTitle:{get:s=>({title:'Claude 远程任务',source:{kind:s.id==='manual'?'user':'provider'}}),refresh:async s=>calls.push(s.id)}};
  installTitleRepair(ctx,async id=>id!=='other');await new Promise(setImmediate);
  assert.deepEqual(calls,['own']);
+});
+
+test('parallel bind requests all read the first complete persisted route',async t=>{
+ const {mkdtemp,rm}=await import('node:fs/promises');
+ const {tmpdir}=await import('node:os');const path=await import('node:path');
+ const previous=process.env.LOCALAPPDATA,base=await mkdtemp(path.join(tmpdir(),'vm-duplicate-bind-'));
+ process.env.LOCALAPPDATA=base;
+ t.after(async()=>{if(previous===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=previous;await rm(base,{recursive:true,force:true});});
+ const routes=await Promise.all(Array.from({length:12},()=>bindRoute('same-chat',proposed)));
+ const saved=await storedRoute('same-chat');
+ assert.ok(routes.every(route=>route.vmTools===saved.vmTools&&route.localRoot===saved.localRoot));
 });

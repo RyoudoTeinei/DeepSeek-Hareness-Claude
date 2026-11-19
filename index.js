@@ -13,7 +13,8 @@ const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputM
 const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
- ctx.effect(()=>{const manager=new VMManager().start();return ()=>manager.stop()});
+ const manager=new VMManager();
+ ctx.effect(()=>{manager.start();return ()=>manager.stop()});
  ctx.inject(['llm','attachments','agents','approval','userQuestions'],child=>{
  const services={llm:child.llm,attachments:child.attachments,agents:child.agents,approval:child.approval,userQuestions:child.userQuestions};
  child.llm.registerAdapter([route],{
@@ -23,7 +24,13 @@ export function apply(ctx){
   listModels:async()=>[info],resolveModel:async()=>info,
   prepareCall:async()=>({model:info,stream:request=>stream(request,services)}),stream:request=>stream(request,services)
  });});
- ctx.inject(['llm','sessions','sessionTitle'],child=>installTitleRepair(child,storedRoute));
+ ctx.inject(['llm','sessions','sessionTitle'],child=>{
+  child.effect(()=>{
+   manager.power.titleOf=id=>{const session=id&&child.sessions.get(id);return session?child.sessionTitle.get(session)?.title:undefined};
+   return ()=>{manager.power.titleOf=undefined};
+  });
+  installTitleRepair(child,storedRoute);
+ });
 }
 export async function* stream(request,host={}){
  if(request.purpose==='session-title'){

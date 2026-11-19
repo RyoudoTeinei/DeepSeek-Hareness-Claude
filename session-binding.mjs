@@ -1,5 +1,5 @@
-import {createHash} from 'node:crypto';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {createHash,randomUUID} from 'node:crypto';
+import {mkdir,writeFile,link,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {desktopScope,readJson} from './desktop-state.mjs';
 
@@ -23,6 +23,11 @@ export async function resolveStoredRoute(sessionId,proposed){
 export async function bindRoute(sessionId,proposed){
  const route=await resolveStoredRoute(sessionId,proposed),file=routeFile(sessionId);
  await mkdir(path.dirname(file),{recursive:true});
- try{await writeFile(file,JSON.stringify(route),{flag:'wx',mode:0o600});return route;}
- catch(error){if(error.code!=='EEXIST')throw error;return resolveRoute(await storedRoute(sessionId),proposed);}
+ // Publish the complete JSON atomically, preserving the first writer's binding.
+ const temp=file+'.'+randomUUID()+'.tmp';
+ try{
+  await writeFile(temp,JSON.stringify(route),{flag:'wx',mode:0o600});
+  try{await link(temp,file);return route;}
+  catch(error){if(error.code!=='EEXIST')throw error;return resolveRoute(await storedRoute(sessionId),proposed);}
+ }finally{await unlink(temp).catch(()=>{});}
 }

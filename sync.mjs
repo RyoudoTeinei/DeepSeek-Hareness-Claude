@@ -9,7 +9,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdirSync,writeFileSync,renameSync,readFileSync} from 'node:fs';
 import path from 'node:path';
-const {host,project,identity,action,sessionId,desktopTools=false,structuredChat=false,vmTools=false,remoteModel,turnId,artifactId,requestId,approved,confirmedConnections,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
+const {host,project,identity,action,sessionId,desktopTools=false,structuredChat=false,vmTools=false,remoteModel,turnId,artifactId,requestId,approved,confirmedConnections,confirmedBusy,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
 function execute(exe,args,input){
  const r=spawnSync(exe,args,{encoding:'utf8',input,stdio:['pipe','pipe','pipe'],maxBuffer:32*1024*1024,timeout:120000,windowsHide:true,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
  if(r.error||r.status!==0)throw Error(r.error?.message||r.stderr.trim()||exe+' failed');
@@ -37,9 +37,20 @@ async function push(args){
  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error(err.trim()||'推送失败')))});
 }
 async function main(){
+ if(action==='workbench-status'){
+  const [route,power]=await Promise.all([storedRoute(sessionId),vmPowerStatus()]);
+  const empty={status:'idle',events:[],artifacts:[],approvals:[]};
+  if(!route)return {activity:empty,power};
+  const scope=desktopScope(sessionId,route.host,route.project);
+  const [activity,vm]=await Promise.all([
+   readJson(path.join(desktopDirectory(scope),'structured','status.json'),empty),
+   route.vmTools?vmStatus(scope):null
+  ]);
+  return {activity:{...activity,vm},power};
+ }
  if(action==='vm-power-status')return vmPowerStatus();
  if(action==='vm-power-start')return requestVMPower('start');
- if(action==='vm-power-stop')return requestVMPower('stop',confirmedConnections);
+ if(action==='vm-power-stop')return requestVMPower('stop',confirmedConnections,confirmedBusy);
  if(action==='session-config'){const route=await storedRoute(sessionId);return {bound:!!route,route};}
  if(action==='session-connect'){
   const route=await resolveStoredRoute(sessionId,{host,project,identity,remoteModel,localRoot:path.resolve('.')});

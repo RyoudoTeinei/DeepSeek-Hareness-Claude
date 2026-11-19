@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {mkdtemp,mkdir,readFile,rm} from 'node:fs/promises';
 import {assertShareRoot,stageVMAttachment,vmStatus} from '../vm-controller.mjs';
-import {validateVMConfig} from '../vm-runtime.mjs';
+import {VMBridge,validateVMConfig} from '../vm-runtime.mjs';
 import {atomicJson,desktopDirectory} from '../desktop-state.mjs';
 import {NativeVMClient,VM_TOOL_NAMES} from '../vm-native.mjs';
 
@@ -55,4 +55,20 @@ test('VM attachments stay in the bound project and offline connections cannot st
  await atomicJson(path.join(directory,'status.json'),{status:'connected',updatedAt:Date.now()-30000});
  assert.equal((await vmStatus(scope)).status,'offline');
  await assert.rejects(stageVMAttachment(scope,root,'new.txt',Buffer.from('bad')),/离线/);
+});
+
+test('late or concurrent tool results cannot publish an obsolete ready state',async t=>{
+ const stateDirectory=await mkdtemp(path.join(os.tmpdir(),'dsh-status-'));
+ t.after(()=>rm(stateDirectory,{recursive:true,force:true}));
+ const bridge=Object.create(VMBridge.prototype);
+ const phases=[],finish=new Map();
+ Object.assign(bridge,{cfg:{stateDirectory},activeTools:0,closed:false,
+  state:async status=>{phases.push(status)},
+  native:{request:({n})=>new Promise(resolve=>finish.set(n,resolve))}
+ });
+ const calls=[1,2].map(n=>bridge.execute({id:String(n).repeat(32),operation:'mcp',arguments:{n}}));
+ while(finish.size<2)await new Promise(resolve=>setTimeout(resolve,10));
+ finish.get(1)({});await calls[0];assert.deepEqual(phases,['running','running']);
+ bridge.closed=true;finish.get(2)({});await calls[1];
+ assert.deepEqual(phases,['running','running']);assert.equal(bridge.activeTools,0);
 });

@@ -1,5 +1,5 @@
 // Session-scoped executor lifecycle owned by the DSH backend.
-import {readdir,realpath} from 'node:fs/promises';
+import {readdir,realpath,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {VMBridge} from './vm-runtime.mjs';
 import {assertShareRoot,ensureGuestRunning} from './vm-controller.mjs';
@@ -9,7 +9,7 @@ import {VMPower,POWER_VERSION,powerRoot} from './vm-power.mjs';
 // The long-lived DSH backend owns connections. A temporary sync-terminal command
 // only writes a connect request; it must not own the executor's process lifetime.
 export class VMManager{
- constructor(base=process.env.LOCALAPPDATA){this.profileBase=base;this.base=path.join(powerRoot(base),'desktop');this.bridges=new Map();this.handled=new Map();this.powerHandled=new Set();this.closed=false;this.checking=false;this.power=new VMPower(base,this.bridges,ensureGuestRunning);this.startedAt=Date.now();}
+ constructor(base=process.env.LOCALAPPDATA){this.profileBase=base;this.base=path.join(powerRoot(base),'desktop');this.bridges=new Map();this.opening=new Map();this.powerHandled=new Set();this.closed=false;this.checking=false;this.power=new VMPower(base,this.bridges,ensureGuestRunning);this.startedAt=Date.now();}
  start(){const tick=()=>void this.tick().catch(error=>{this.backgroundError=String(error.message)});this.timer=setInterval(tick,1000);tick();return this;}
  publish(){
   const task=(this.publishing||Promise.resolve()).catch(()=>{}).then(async()=>{
@@ -21,7 +21,7 @@ export class VMManager{
   let response;
   try{
    if(this.closed)throw Error('DSH 后台正在退出');
-   const result=request.action==='start'?await this.power.start({createdAt:request.createdAt}):await this.power.shutdown({confirmedConnections:request.confirmedConnections});
+   const result=request.action==='start'?await this.power.start({createdAt:request.createdAt}):await this.power.shutdown({confirmedConnections:request.confirmedConnections,confirmedBusy:request.confirmedBusy});
    response={ok:true,result};
   }catch(error){response={ok:false,error:String(error.message)}}
   try{await this.publish()}catch{this.lastHeartbeat=0;}
@@ -38,37 +38,80 @@ export class VMManager{
     if(!request||request.id+'.json'!==name||!['start','stop'].includes(request.action)||!Number.isSafeInteger(request.createdAt)||request.createdAt<this.startedAt||Date.now()-request.createdAt>120000||request.createdAt>Date.now()+5000||this.powerHandled.has(request.id))continue;
     this.powerHandled.add(request.id);void this.powerRequest(request,controls).catch(error=>{this.backgroundError=String(error.message)});
    }
-   const folders=await readdir(this.base,{withFileTypes:true}).catch(()=>[]);
-   for(const entry of folders){
-    if(!entry.isDirectory()||!/^[a-f0-9]{32}$/.test(entry.name))continue;
-    const folder=path.join(this.base,entry.name,'vm');
-    const request=await readJson(path.join(folder,'connect-request.json'));
-    if(!request||!/^[a-f0-9]{32}$/.test(request.id)||!Number.isSafeInteger(request.createdAt)||request.createdAt<this.startedAt||Date.now()-request.createdAt>120000||request.createdAt>Date.now()+5000||this.handled.get(entry.name)===request.id)continue;
-    if(this.bridges.has(entry.name))continue;
-    this.handled.set(entry.name,request.id);
-    void this.connect(entry.name,folder,request);
+   const inbox=path.join(powerRoot(this.profileBase),'connect-inbox');
+   for(const name of await readdir(inbox).catch(()=>[])){
+    if(!/^[a-f0-9]{32}\.json$/.test(name))continue;
+    const file=path.join(inbox,name),request=await readJson(file);
+    if(!request||request.managerPid!==process.pid)continue;
+    await unlink(file);
+    if(request.createdAt<this.startedAt||Date.now()-request.createdAt>120000)continue;
+    void this.answerConnect(request).catch(error=>{this.backgroundError=String(error.message)});
    }
   }finally{this.checking=false;}
  }
- async connect(scope,folder,request){
+ async answerConnect(request){
+  const {id,cfg}=request;
+  if(!/^[a-f0-9]{32}$/.test(id)||!cfg||!/^[a-f0-9]{32}$/.test(cfg.scope))return;
+  const folder=path.join(this.base,cfg.scope,'vm');
+  let reply;
+  try{
+   if(path.resolve(cfg.stateDirectory)!==path.resolve(folder))throw Error('VM connection binding mismatch');
+   const root=await realpath(cfg.localRoot);
+   assertShareRoot(root,path.dirname(cfg.guest.identity));
+   const saved=await readJson(path.join(folder,'config.json'));
+   if(saved&&path.resolve(saved.localRoot).toLowerCase()!==root.toLowerCase())throw Error('聊天已绑定其他项目');
+   const bridge=await this.ensureBridge({...cfg,localRoot:root},request);
+   reply={ok:true,state:{...bridge.lastState,connectionId:bridge.connectionId,scope:cfg.scope}};
+  }catch(error){reply={ok:false,error:String(error.message)};}
+  await atomicJson(path.join(folder,'connection-results',id+'.json'),reply);
+ }
+ ensureBridge(cfg,intent){
+  const {scope}=cfg;
+  const pending=this.opening.get(scope);
+  if(pending){
+   if(pending.root!==cfg.localRoot.toLowerCase())throw Error('聊天正在连接其他目录');
+   if(intent.explicitWake&&intent.createdAt>=pending.intent.createdAt){
+    pending.intent.explicitWake=true;
+    pending.intent.createdAt=intent.createdAt;
+   }
+   return pending.ready;
+  }
+  const current=this.bridges.get(scope);
+  if(current&&!current.closed){
+   if(current.cfg.localRoot.toLowerCase()!==cfg.localRoot.toLowerCase())throw Error('聊天已绑定其他目录');
+   return Promise.resolve(current);
+  }
+  const ready=this.startBridge(cfg,intent,current).finally(()=>this.opening.delete(scope));
+  this.opening.set(scope,{root:cfg.localRoot.toLowerCase(),intent,ready});
+  return ready;
+ }
+ async startBridge(cfg,intent,closing){
+  const {scope,stateDirectory}=cfg;
   let bridge;
   try{
-   const cfg=await readJson(path.join(folder,'config.json'));
-   if(!cfg||cfg.scope!==scope||path.resolve(cfg.stateDirectory)!==path.resolve(folder))throw Error('VM connection binding mismatch');
-   const localRoot=await realpath(cfg.localRoot);assertShareRoot(localRoot,path.dirname(cfg.guest.identity));
-   if(this.closed)throw Error('DSH 后台正在退出');
-   await this.power.connect({createdAt:request.createdAt,explicitWake:request.explicitWake===true},async()=>{
+   if(closing)await closing.stop();
+   await this.power.connect(intent,async()=>{
     if(this.closed)throw Error('DSH 后台正在退出');
-    bridge=new VMBridge({...cfg,localRoot});this.bridges.set(scope,bridge);
+    await atomicJson(path.join(stateDirectory,'config.json'),cfg);
+    bridge=new VMBridge(cfg);
+    this.bridges.set(scope,bridge);
     await bridge.start();
    });
-   if(this.closed)await bridge.stop();
-   await bridge.done;
-   await bridge.stop();
+   if(this.closed)throw Error('DSH 后台正在退出');
+   void this.observeBridge(scope,bridge).catch(error=>{this.backgroundError=String(error.message)});
+   return bridge;
   }catch(error){
-   await bridge?.stop();
-   await atomicJson(path.join(folder,'status.json'),{status:'failed',scope,updatedAt:Date.now(),error:String(error.message)}).catch(()=>{});
-  }finally{if(this.bridges.get(scope)===bridge)this.bridges.delete(scope);}
+   if(bridge)await bridge.stop();
+   if(!bridge||this.bridges.get(scope)===bridge){
+    await atomicJson(path.join(stateDirectory,'status.json'),{status:'failed',scope,updatedAt:Date.now(),error:String(error.message)});
+    if(bridge)this.bridges.delete(scope);
+   }
+   throw error;
+  }
+ }
+ async observeBridge(scope,bridge){
+  try{await bridge.done;await bridge.stop();}
+  finally{if(this.bridges.get(scope)===bridge)this.bridges.delete(scope);}
  }
  async stop(){
   this.closed=true;clearInterval(this.timer);

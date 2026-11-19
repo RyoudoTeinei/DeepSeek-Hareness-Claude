@@ -82,3 +82,16 @@ test('image-only message uploads bytes and emits a remote reference',async()=>{
   {attachments:{readImage:async()=>({data:new Uint8Array([1,2,3])})}},async(name,data)=>{assert.equal(name,'picture.png');return '.dsh-attachments/hash/'+name;});
  assert.equal(result.count,1);assert.ok(result.text.includes('picture.png'));
 });
+
+test('preflight rejects the entire turn before uploading any valid prefix',async()=>{
+ const image={type:'image',attachment:{name:'image',mediaType:'image/png'}};
+ let uploads=0,reads=0;
+ const services={attachments:{readImage:async()=>{reads++;return {data:Buffer.from('example')}}}};
+ const prepare=content=>preparePrompt({content},services,async()=>{uploads++;return 'uploaded'});
+ await assert.rejects(prepare(Array(11).fill(image)),/10 个/);
+ await assert.rejects(prepare([image,{type:'image',attachment:{mediaType:'invalid'}}]),/格式/);
+ assert.equal(reads,0);
+ services.attachments.readImage=async ref=>({data:ref.name==='bad'?{byteLength:101*1024*1024}:Buffer.from('example')});
+ await assert.rejects(prepare([image,{...image,attachment:{...image.attachment,name:'bad'}}]),/100 MiB/);
+ assert.equal(uploads,0);
+});

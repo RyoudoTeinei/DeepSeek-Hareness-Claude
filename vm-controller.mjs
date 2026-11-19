@@ -1,6 +1,7 @@
-import {readFile,writeFile,mkdir,realpath,lstat} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,realpath,lstat,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {fileURLToPath} from 'node:url';
 import {createHash,randomBytes} from 'node:crypto';
 import {desktopScope,desktopDirectory,readJson,atomicJson} from './desktop-state.mjs';
 import {validateVMConfig,probeVMIdentity} from './vm-runtime.mjs';
@@ -8,13 +9,25 @@ import {POWER_VERSION,powerRoot,loadPowerProfile,probePower} from './vm-power.mj
 
 const registry=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','vm-executor.json');
 const directory=scope=>path.join(desktopDirectory(scope),'vm');
+// Older registrations refer to a copy of the stock launcher in the instance directory.
+async function isBundledLauncher(file){
+ const text=await readFile(file,'utf8');
+ const normalized=text.replace(/^\uFEFF/,'').replaceAll('\r\n','\n');
+ return createHash('sha256').update(normalized).digest('hex')==='0d8656e2d1477a2757d4f900b9e68d3d3fcf746257469f7c5722b44971cc9aa0'||
+  normalized===(await readFile(new URL('./scripts/vm/start-vm.ps1',import.meta.url),'utf8')).replaceAll('\r\n','\n');
+}
 async function guestPortOpen(port){
  return new Promise(resolve=>{const socket=net.connect({host:'127.0.0.1',port});const done=value=>{socket.destroy();resolve(value)};socket.setTimeout(700,()=>done(false));socket.once('connect',()=>done(true));socket.once('error',()=>done(false));});
 }
-export async function ensureGuestRunning(profile){
+export async function ensureGuestRunning(profile,{explicitWake=false}={}){
  if(!await guestPortOpen(profile.guest.port)){
   if(process.platform!=='win32'||!profile.startScript)throw Error('本地虚拟机未启动，请先启动独立执行环境');
-  const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',profile.startScript,'-Network','isolated'],{windowsHide:true,stdio:'ignore'});
+  const useBundled=path.basename(profile.startScript).toLowerCase()==='start-vm.ps1'&&await isBundledLauncher(profile.startScript);
+  const script=useBundled?fileURLToPath(new URL('./scripts/vm/start-vm.ps1',import.meta.url)):profile.startScript;
+  const args=['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-Network','isolated'];
+  if(useBundled)args.push('-ConfigPath',profile.vmStatePath);
+  const env={...process.env,DSH_VM_EXPLICIT_WAKE:explicitWake?profile.guest.instanceId:''};
+  const child=spawn('powershell.exe',args,{windowsHide:true,stdio:'ignore',env});
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});
   if(code!==0)throw Error('独立虚拟机未能启动，请检查执行器日志');
  }
@@ -56,20 +69,19 @@ export async function vmPowerStatus(){
  try{const profile=await loadPowerProfile(base),policy=await readJson(path.join(path.dirname(profile.guest.identity),'power-policy.json'),{});return {...await probePower(profile),manualOff:!!policy.manualOff,memoryMiB:profile.vm.memoryMiB,cpus:profile.vm.cpus,connections:[],controlReady:false};}
  catch(error){return {state:'unavailable',connections:[],controlReady:false,error:error.message};}
 }
-export async function requestVMPower(action,confirmedConnections){
+export async function requestVMPower(action,confirmedConnections,confirmedBusy){
  await readyPowerManager();
  if(!['start','stop'].includes(action))throw Error('虚拟机电源操作无效');
  if(confirmedConnections!==undefined&&(!Array.isArray(confirmedConnections)||confirmedConnections.length>100||confirmedConnections.some(id=>typeof id!=='string'||!/^[a-f0-9]{32}$/.test(id))))throw Error('会话确认信息无效');
  const id=randomBytes(16).toString('hex'),folder=path.join(powerRoot(process.env.LOCALAPPDATA),'power-requests');
- await atomicJson(path.join(folder,id+'.json'),{id,action,confirmedConnections,createdAt:Date.now()});
+ await atomicJson(path.join(folder,id+'.json'),{id,action,confirmedConnections,confirmedBusy,createdAt:Date.now()});
  const deadline=Date.now()+120000;
  while(Date.now()<deadline){const result=await readJson(path.join(folder,id+'.result.json'));if(result){if(!result.ok)throw Error(result.error);return result.result;}await new Promise(r=>setTimeout(r,250));}
  throw Error('电源操作尚未确认完成，请刷新状态，不要连续重复提交。');
 }
 export async function connectVM(route,sessionId,localRoot,options={}){
- await readyPowerManager();
+ const manager=await readyPowerManager();
  const scope=desktopScope(sessionId,route.host,route.project),folder=directory(scope);
- const existing=await vmStatus(scope);
  const profile=await readJson(registry());
  if(!profile?.guest)throw Error('本地虚拟机执行器未配置，请先安装并验证独立执行环境');
  const vm=JSON.parse((await readFile(profile.vmStatePath,'utf8')).replace(/^\uFEFF/,''));
@@ -78,18 +90,20 @@ export async function connectVM(route,sessionId,localRoot,options={}){
  const previous=await readJson(path.join(folder,'config.json'));
  if(previous&&path.resolve(previous.localRoot).toLowerCase()!==root.toLowerCase())throw Error('此聊天已经绑定另一本地目录，请在新聊天连接新的项目');
  if(previous&&previous.vmEngine!=='claude-mcp-v2')throw Error('此聊天使用旧版虚拟机执行器，请在新聊天启用虚拟机 CC；旧会话已保留。');
- if(['connected','running'].includes(existing.status))return existing;
- const cfg=validateVMConfig({scope,cloud:{host:route.host,identity:route.identity||''},guest:{...profile.guest,root:'/workspaces/'+scope},localRoot:root,stateDirectory:folder,hostPython:profile.hostPython,network:'isolated',nativeChat:true,vmEngine:'claude-mcp-v2',project:route.project,remoteModel:route.remoteModel||''});
- await mkdir(folder,{recursive:true});await atomicJson(path.join(folder,'config.json'),cfg);
- const started=Date.now();
- await atomicJson(path.join(folder,'connect-request.json'),{id:randomBytes(16).toString('hex'),createdAt:started,explicitWake:options.explicitWake===true});
+
+ const cfg=validateVMConfig({scope,cloud:{host:route.host,identity:route.identity||''},guest:{...profile.guest,root:'/workspaces/'+scope},localRoot:root,stateDirectory:folder,hostPython:profile.hostPython,network:'isolated',nativeChat:true,vmEngine:'claude-mcp-v2',sessionId,project:route.project,remoteModel:route.remoteModel||''});
+ const started=Date.now(),id=randomBytes(16).toString('hex');
+ const receipt=path.join(folder,'connection-results',id+'.json');
+ const request={id,cfg,createdAt:started,explicitWake:options.explicitWake===true,managerPid:manager.pid};
+ await atomicJson(path.join(powerRoot(process.env.LOCALAPPDATA),'connect-inbox',id+'.json'),request);
  while(Date.now()-started<120000){
-  const current=await vmStatus(scope);
-  if(current.updatedAt>=started){
-   if(['connected','running'].includes(current.status))return current;
-   if(['failed','offline'].includes(current.status))throw Error(current.error||'本地虚拟机连接失败；请检查执行器是否已启动');
+  const reply=await readJson(receipt);
+  if(reply){
+   await unlink(receipt).catch(()=>{});
+   if(!reply.ok)throw Error(reply.error);
+   return reply.state;
   }
-  await new Promise(resolve=>setTimeout(resolve,300));
+  await new Promise(resolve=>setTimeout(resolve,200));
  }
  throw Error('连接本地虚拟机超时，请确认 DSH 已加载新版插件服务及执行器已启动');
 }

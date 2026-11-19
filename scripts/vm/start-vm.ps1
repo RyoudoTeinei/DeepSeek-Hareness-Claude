@@ -1,9 +1,8 @@
-param([ValidateSet('bootstrap','isolated')][string]$Network='isolated')
+param([ValidateSet('bootstrap','isolated')][string]$Network='isolated',[string]$ConfigPath=(Join-Path $PSScriptRoot 'instance\vm.json'))
 $ErrorActionPreference='Stop'
-$configPath=Join-Path $PSScriptRoot 'instance\vm.json'
 $cfg=Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $policyFile=Join-Path $cfg.directory 'power-policy.json'
-if(Test-Path -LiteralPath $policyFile){$policy=Get-Content -LiteralPath $policyFile -Raw | ConvertFrom-Json;if($policy.manualOff){throw 'VM was manually powered off. Use the updated DSH Start VM or Connect action.'}}
+if(Test-Path -LiteralPath $policyFile){$policy=Get-Content -LiteralPath $policyFile -Raw | ConvertFrom-Json;if($policy.manualOff -and $env:DSH_VM_EXPLICIT_WAKE -ne $cfg.instanceId){throw 'VM was manually powered off. Use the updated DSH Start VM or Connect action.'}}
 $pidFile=Join-Path $cfg.directory 'qemu.pid'
 if(Test-Path -LiteralPath $pidFile){
  $vmPid=(Get-Content -LiteralPath $pidFile -Raw).Trim()

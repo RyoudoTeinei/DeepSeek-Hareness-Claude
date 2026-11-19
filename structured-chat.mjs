@@ -1,7 +1,8 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
-import {readFile,mkdir} from 'node:fs/promises';
+import {readFile,mkdir,writeFile,mkdtemp,rm} from 'node:fs/promises';
+import os from 'node:os';
 import {once} from 'node:events';
 import path from 'node:path';
 import {atomicJson,desktopDirectory,desktopScope,readJson} from './desktop-state.mjs';
@@ -99,46 +100,87 @@ export async function uploadBytes(cfg,scope,name,data,signal){
 // Accept a whole handle block only, and verify it against DSH's own immutable store.
 const FILE_HANDLE=/^\[File ("(?:[^"\\]|\\.)*") \((\d+) bytes, sha256:([0-9a-f]{8})\): verbatim read-only copy saved at ("(?:[^"\\]|\\.)*")\. Read that path[\s\S]*\]$/;
 
-export async function preparePrompt(message,host,upload,signal){
-  const texts=[];
-  let count=0;
-  for(const block of message.content){
-    signal?.throwIfAborted();
-    if(block.type==='text'){
-      const match=FILE_HANDLE.exec(block.text);
-      if(!match){texts.push(block.text);continue;}
-      const local=JSON.parse(match[4]);const name=JSON.parse(match[1]);const size=Number(match[2]);
-      const digest=path.basename(path.dirname(local));
-      if(!/^[a-f0-9]{64}$/.test(digest)||!digest.startsWith(match[3])||!host.attachments?.fileHostPath||!host.attachments?.readFileStream)throw Error('无法验证 DSH 附件引用，请重新添加附件');
-      const ref={attachmentId:'sha256:'+digest,name,bytes:size};
-      const expected=host.attachments.fileHostPath(ref);
-      if(!expected||path.resolve(expected).toLowerCase()!==path.resolve(local).toLowerCase())throw Error('附件路径不属于 DSH 附件存储');
-      if(size>MAX_BYTES)throw Error('附件超过 100 MiB');
-      const chunks=[];let total=0;
-      for await(const part of host.attachments.readFileStream(ref,signal)){total+=part.byteLength;if(total>MAX_BYTES)throw Error('附件超过 100 MiB');chunks.push(Buffer.from(part));}
-      const data=Buffer.concat(chunks);
-      if(data.length!==size||createHash('sha256').update(data).digest('hex')!==digest)throw Error('附件内容校验失败');
-      const remote=await upload(name,data);
-      texts.push('用户附件 '+JSON.stringify(SAFE_NAME(name))+' 位于项目内 '+JSON.stringify(remote)+'，请按需读取。');count++;
-    }else if(block.type==='image'){
-      if(!block.attachment||!host.attachments?.readImage)throw Error('图片附件服务不可用');
-      const stored=await host.attachments.readImage(block.attachment,signal);
-      const ext={'image/png':'.png','image/jpeg':'.jpg','image/webp':'.webp','image/gif':'.gif'}[block.attachment.mediaType];
-      if(!ext)throw Error('不支持此图片类型');
-      const name=SAFE_NAME(block.attachment.name||'image'+ext);
-      const remote=await upload(name.endsWith(ext)?name:name+ext,Buffer.from(stored.data));
-      texts.push('用户图片位于项目内 '+JSON.stringify(remote)+'，请使用 Read 工具查看。');count++;
-    }else if(block.type==='file'){
-      if(!host.llm?.fileRequestText)throw Error('文件附件服务不可用');
-      const next=await preparePrompt({content:[{type:'text',text:host.llm.fileRequestText(block.attachment)}]},host,upload,signal);
-      texts.push(next.text);count+=next.count;
-    }else throw Error('本轮含不支持的消息内容');
+const IMAGE_EXTENSIONS=new Map([['image/png','.png'],['image/jpeg','.jpg'],['image/webp','.webp'],['image/gif','.gif']]);
+function inspectBlock(block,host){
+  if(block.type==='file'){
+    if(!block.attachment||!host.llm?.fileRequestText)throw Error('文件附件服务不可用');
+    const handle=host.llm.fileRequestText(block.attachment);
+    if(typeof handle!=='string'||!FILE_HANDLE.test(handle))throw Error('无法验证文件附件，请重新添加');
+    return inspectBlock({type:'text',text:handle},host);
   }
-  if(count>10)throw Error('每轮最多上传 10 个附件');
-  const text=texts.join('\n\n');
-  if(!text.trim())throw Error('消息为空');
-  if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text))throw Error('消息包含无效控制字符');
-  return {text,count};
+  if(block.type==='image'){
+    const ref=block.attachment,ext=IMAGE_EXTENSIONS.get(ref?.mediaType);
+    if(!ext||!host.attachments?.readImage)throw Error('图片格式或附件服务不可用');
+    if(ref.bytes>MAX_BYTES)throw Error('图片超过 100 MiB');
+    const name=SAFE_NAME(ref.name||'image'+ext);
+    return {kind:'image',name:name.endsWith(ext)?name:name+ext,ref};
+  }
+  if(block.type!=='text'||typeof block.text!=='string')throw Error('本轮含不支持的消息内容');
+  const handle=FILE_HANDLE.exec(block.text);
+  if(!handle){
+    const text=block.text.replaceAll('\r\n','\n');
+    if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text))throw Error('消息包含无效控制字符');
+    return {kind:'text',text};
+  }
+  const [,encodedName,rawSize,prefix,encodedPath]=handle;
+  const local=JSON.parse(encodedPath),name=JSON.parse(encodedName),size=Number(rawSize);
+  if(size>MAX_BYTES)throw Error('附件超过 100 MiB');
+  const digest=path.basename(path.dirname(local));
+  if(!/^[a-f0-9]{64}$/.test(digest)||!digest.startsWith(prefix)||!host.attachments?.fileHostPath||!host.attachments?.readFileStream)throw Error('无法验证 DSH 附件引用，请重新添加附件');
+  const ref={attachmentId:'sha256:'+digest,name,bytes:size};
+  const expected=host.attachments.fileHostPath(ref);
+  if(!expected||path.resolve(expected).toLowerCase()!==path.resolve(local).toLowerCase())throw Error('附件路径不属于 DSH 附件存储');
+  return {kind:'file',name,ref,digest};
+}
+
+async function snapshotAttachment(item,service,destination,signal){
+  if(item.kind==='image'){
+    const {data}=await service.readImage(item.ref,signal);
+    if(data.byteLength>MAX_BYTES)throw Error('图片超过 100 MiB');
+    await writeFile(destination,data,{flag:'wx',mode:0o600,signal});
+    return;
+  }
+  const digest=createHash('sha256');
+  let total=0;
+  async function* chunks(){
+    for await(const part of service.readFileStream(item.ref,signal)){
+      signal?.throwIfAborted();total+=part.byteLength;
+      if(total>MAX_BYTES||total>item.ref.bytes)throw Error('附件长度校验失败');
+      digest.update(part);yield part;
+    }
+  }
+  await writeFile(destination,chunks(),{flag:'wx',mode:0o600,signal});
+  if(total!==item.ref.bytes||digest.digest('hex')!==item.digest)throw Error('附件内容校验失败');
+}
+
+function inspectMessage(message,host){
+  const items=message.content.map(block=>inspectBlock(block,host));
+  const attachments=items.filter(item=>item.kind!=='text');
+  if(attachments.length>10)throw Error('每轮最多上传 10 个附件');
+  if(!attachments.length&&!items.some(item=>item.text.trim()))throw Error('消息为空');
+  return {items,attachments};
+}
+
+export async function preparePrompt(message,host,upload,signal,plan=inspectMessage(message,host)){
+  signal?.throwIfAborted();
+  const {items,attachments}=plan;
+  // Validate every byte before the first project write. Hold at most one file in memory.
+  const temp=attachments.length?await mkdtemp(path.join(os.tmpdir(),'dsh-attachments-')):null;
+  try{
+    for(const [i,item] of attachments.entries()){
+      item.snapshot=path.join(temp,String(i));
+      await snapshotAttachment(item,host.attachments,item.snapshot,signal);
+    }
+    const texts=[];
+    for(const item of items){
+      signal?.throwIfAborted();
+      if(item.kind==='text'){texts.push(item.text);continue;}
+      const remote=await upload(item.name,await readFile(item.snapshot,{signal}));
+      texts.push(item.kind==='image'?'用户图片位于项目内 '+JSON.stringify(remote)+'，请使用 Read 工具查看。':
+        '用户附件 '+JSON.stringify(SAFE_NAME(item.name))+' 位于项目内 '+JSON.stringify(remote)+'，请按需读取。');
+    }
+    return {text:texts.join('\n\n'),count:attachments.length};
+  }finally{if(temp)await rm(temp,{recursive:true,force:true});}
 }
 
 async function permission(host,request,event){
@@ -195,12 +237,13 @@ export async function* structuredStream(request,cfg,host={}){
   let connection;
   try{
     yield* translator.whole('reasoning','正在准备远端会话与附件…');
+    const plan=inspectMessage(manual,host);
     if(cfg.vmTools&&!['connected','running'].includes((await vmStatus(scope)).status)){
       yield* translator.whole('reasoning','正在恢复本聊天的虚拟机连接与云端会话…');
       await connectVM(cfg,request.sessionId,cfg.localRoot);
     }
     if(!cfg.vmTools)await prepareAgent(cfg,scope,request.signal);
-    const prompt=await preparePrompt(manual,host,(name,data)=>cfg.vmTools?stageVMAttachment(scope,cfg.localRoot,name,data):uploadBytes(cfg,scope,name,data,request.signal),request.signal);
+    const prompt=await preparePrompt(manual,host,(name,data)=>cfg.vmTools?stageVMAttachment(scope,cfg.localRoot,name,data):uploadBytes(cfg,scope,name,data,request.signal),request.signal,plan);
     if(cfg.vmTools)yield* translator.whole('reasoning','工具运行位置：本地隔离虚拟机；文件写入当前共享项目');
     if(prompt.count)yield* translator.whole('reasoning','已上传并校验 '+prompt.count+' 个附件');
     state.status='running';await persist();
