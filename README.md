@@ -1,6 +1,6 @@
 # DeepSeek Hareness Claude
 
-**本分支：`feature/cloud-cc-local-vm`，当前快照 `0.4.0-vm.8`。** 这是一条独立的本地虚拟机执行路线，保留 Windows 版 DeepSeek Harness 的原生聊天与真实服务器终端。
+**本分支：`feature/cloud-cc-local-vm`，当前快照 `0.4.0-vm.9`。** 这是一条独立的本地虚拟机执行路线，保留 Windows 版 DeepSeek Harness 的原生聊天与真实服务器终端。
 
 | 代码线 | 项目文件和命令在哪里执行 |
 | --- | --- |
@@ -37,9 +37,11 @@ dsh plugin --profile desktop add 'https://github.com/RyoudoTeinei/DeepSeek-Haren
 
 这是已在专用 Windows / QEMU / Linux VPS 环境验证的预览分支，尚未提供通用一键安装。仓库包含插件、测试及 VM 准备脚本，不包含虚拟磁盘、CC/QEMU 二进制、密钥、登录配置或个人会话数据。
 
-## 左侧工作区与会话（0.4.0-vm.8）
+## 工作台与会话栏（0.4.0-vm.9）
 
-已添加的 Claude 工作区采用暖橙色文件夹，右侧的「Claude ›」可打开工作台。聊天行按 DSH 记录的模型选择显示 Claude 或 DeepSeek 标签，切换模型后随之更新。一个项目内可同时有两种聊天；尚无可识别模型记录的行保留默认样式。
+已添加的 Claude 工作区采用暖橙色文件夹，点击项目旁的「Claude 工作台」可进入。聊天标题前会显示暖色 Claude 或蓝色 DeepSeek。缩窄侧栏后显示 C 或 D，悬停可看全名。DSH 使用前方图标位显示运行状态时，模型名在行尾显示。标识跟随每个聊天的模型选择，尚无可识别模型记录的行沿用 DSH 样式。
+
+首次接入时，先核对将被读写的本机目录，填写 SSH 主机后可按 Enter 接入。填写有误时，工作台会定位到具体字段。断线后，点「重连当前会话」继续原聊天，错误详情可展开查看。关闭共用虚拟机前，确认区将有任务的会话排在最前，列出聊天名和所属项目。按 Esc 或点「取消」可返回。
 
 ## 接入、恢复与关机（0.4.0-vm.7）
 
