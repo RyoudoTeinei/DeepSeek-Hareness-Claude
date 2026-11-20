@@ -7,9 +7,9 @@ import {connectVM,disconnectVM,vmStatus,vmPowerStatus,requestVMPower} from './vm
 import {storedRoute,resolveStoredRoute,bindRoute} from './session-binding.mjs';
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
-import {mkdirSync,writeFileSync,renameSync,readFileSync} from 'node:fs';
+import {mkdirSync,writeFileSync,renameSync,readFileSync,realpathSync} from 'node:fs';
 import path from 'node:path';
-const {host,project,identity,action,sessionId,desktopTools=false,structuredChat=false,vmTools=false,remoteModel,turnId,artifactId,requestId,approved,confirmedConnections,confirmedBusy,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
+const {host,project,identity,action,sessionId,desktopTools=false,structuredChat=false,vmTools=false,remoteModel,turnId,artifactId,requestId,approved,confirmedConnections,confirmedBusy,migrationRoot,files=[],message=''}=JSON.parse(readFileSync(0,'utf8').replace(/^\uFEFF/,''));
 function execute(exe,args,input){
  const r=spawnSync(exe,args,{encoding:'utf8',input,stdio:['pipe','pipe','pipe'],maxBuffer:32*1024*1024,timeout:120000,windowsHide:true,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
  if(r.error||r.status!==0)throw Error(r.error?.message||r.stderr.trim()||exe+' failed');
@@ -52,6 +52,14 @@ async function main(){
  if(action==='vm-power-start')return requestVMPower('start');
  if(action==='vm-power-stop')return requestVMPower('stop',confirmedConnections,confirmedBusy);
  if(action==='session-config'){const route=await storedRoute(sessionId);return {bound:!!route,route};}
+ if(action==='session-migrate'){
+  const route=await storedRoute(sessionId);
+  if(!route)throw Error('当前聊天还没有服务器会话绑定。');
+  const root=migrationRoot||route.localRoot;
+  if(!root||!path.isAbsolute(root)||realpathSync(root).toLowerCase()!==realpathSync('.').toLowerCase())throw Error('请从要共享的本机项目打开工作台，再切换此聊天。');
+  if(route.vmTools)return route;
+  return connectVM(route,sessionId,root,{explicitWake:true,migrate:true});
+ }
  if(action==='session-connect'){
   const route=await resolveStoredRoute(sessionId,{host,project,identity,remoteModel,localRoot:path.resolve('.')});
   if(route.vmTools)await connectVM(route,sessionId,route.localRoot,{explicitWake:true});

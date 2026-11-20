@@ -85,7 +85,7 @@ def verify_running_mode(directory):
         raise ValueError('虚拟机执行器版本已变化，请新建聊天；已有会话保持原执行方式。')
 
 
-def ensure(directory, scope, model=''):
+def ensure(directory, scope, model='', fork=None):
     """Caller holds session.lock. Existing panes are never restarted."""
     name = session_name(scope,directory)
     if existing_session(scope):
@@ -114,8 +114,12 @@ def ensure(directory, scope, model=''):
             prompt='This DSH session uses an unauthenticated Claude MCP executor inside a LOCAL LINUX VM. All user project files and attachments are mounted at /workspaces/'+scope+'. Use mcp__dsh_local_vm__Read/Write/Edit/Bash and its other native tools for ALL project file and command operations, including running skill scripts. File arguments should use that absolute VM path. Cloud Agent, Skill, planning, task and web tools remain available. For project delegation prefer the vm-project subagent, which has the VM MCP tools; never substitute cloud execution when the VM is offline. Skills load on the server: their bundled script paths are NOT automatically present in the VM. Put needed scripts/dependencies in the VM before running them. VM Bash background jobs belong to the VM: read their backgroundOutputPath with VM Read and stop with VM TaskStop, not cloud task tools. The VM has no public network. Permissions are handled by the cloud Claude session.'
     agent.save(mcp, {'mcpServers': servers})
     executable = Path.home() / '.local/bin/claude'
-    args = [str(executable) if executable.exists() else 'claude',
-            '--resume' if previous.get('started') else '--session-id', sid,
+    history = ['--resume' if previous.get('started') else '--session-id', sid]
+    if fork:
+        if not use_vm or name != 'dsh-vm-native-'+scope:
+            raise ValueError('历史分叉必须使用此聊天独立的虚拟机终端。')
+        history = ['--resume',str(uuid.UUID(fork['source'])),'--fork-session','--session-id',str(uuid.UUID(fork['id']))]
+    args = [str(executable) if executable.exists() else 'claude', *history,
             '--settings', str(settings), '--strict-mcp-config', '--mcp-config', str(mcp),
             '--append-system-prompt', prompt]
     if use_vm:
@@ -130,10 +134,15 @@ def ensure(directory, scope, model=''):
             raise ValueError('Invalid model')
         args += ['--model', model]
     start='exec '+shlex.join((['env','DISABLE_AUTOUPDATER=1'] if use_vm else [])+args)
+    capabilities={'vmTools':use_vm,'vmEngine':vm_engine,'terminal':name}
+    if fork:
+        # A lost SSH response after tmux creates the pane must be recoverable.
+        agent.save(directory/'native-capabilities.json',capabilities)
     tmux('new-session', '-d', '-s', name, '-x', '120', '-y', '40', '-c', str(root), start)
     tmux('set-option', '-t', name, 'mouse', 'on')
     tmux('set-option', '-t', name + ':', 'history-limit', '50000')
-    agent.save(directory/'native-capabilities.json',{'vmTools':use_vm,'vmEngine':vm_engine,'terminal':name})
+    if not fork:
+        agent.save(directory/'native-capabilities.json',capabilities)
     return name
 
 

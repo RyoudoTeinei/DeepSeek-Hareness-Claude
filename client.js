@@ -472,10 +472,10 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     return()=>{active=false};
    },[sessionId,workspace?.workspaceId,configAttempt]);
    const {state,power,route,error,refresh}=useWorkspaceStatus(rpc,sessionId,ready&&!syncOpen,panel,tabVisible);
-   // Another pane can bind an open first-use form while this tab is hidden.
+   // A retained panel can be bound or migrated by another panel of this chat.
    React.useEffect(()=>{
-    if(ready&&!bound&&route){set(route);setBound(true);showSettings(false)}
-   },[ready,bound,route]);
+    if(ready&&route&&(!bound||(!cfg.vmTools&&route.vmTools))){set(route);setBound(true);showSettings(false)}
+   },[ready,bound,route,cfg.vmTools]);
    React.useEffect(()=>{if(notice?.kind!=='success')return;const timer=setTimeout(()=>notify(null),5000);return()=>clearTimeout(timer)},[notice]);
    if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,tabVisible,back:()=>showSync(false),terminal:()=>tab?.actions.openTab('terminal',{})});
    async function start(op){
@@ -500,6 +500,17 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     try{await rpc({...cfg,action:'vm-disconnect'});await refresh();notify({kind:'success',text:'已断开本机执行连接，聊天记录已保留。'})}
     catch(e){notify({kind:'error',text:e.message})}finally{actionGuard.current=false;setWorking('')}
    }
+   async function migrate(){
+    if(actionGuard.current||powerBusy||!bound||cfg.vmTools)return;
+    actionGuard.current=true;setWorking('migrate');notify(null);
+    try{
+     const next=await rpc({action:'session-migrate',migrationRoot:workspace?.path||cfg.localRoot});
+     if(!next?.vmTools)throw Error('尚未确认虚拟机绑定，请刷新状态。');
+     set(next);showSettings(false);
+     notify({kind:'success',text:'已保留上下文。在左侧继续聊天，或打开新的 Claude 终端。'});
+    }catch(e){notify({kind:'error',text:String(e.message||e)})}
+    finally{actionGuard.current=false;setWorking('');void refresh()}
+   }
    const manuallyOff=power.manualOff&&power.state==='stopped';
    let phase=state.vm?.status||'offline';
    if(configError)phase='failed';
@@ -513,7 +524,8 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
    const connected=['connected','running'].includes(phase),title=workspace?.title||'Claude 工作区';
    const recovering=ready&&bound&&cfg.vmTools&&['failed','offline'].includes(phase);
    let caption='云端 Claude 将通过虚拟机读写上方的本机目录。';
-   if(!cfg.vmTools)caption='本聊天在服务器上读写文件。要通过虚拟机读写本机项目，请在此工作区新建聊天。';
+   if(working==='migrate')caption='正在连接本机项目并校验云端聊天历史。旧 CC 窗口会保留。';
+   else if(!cfg.vmTools)caption=workspace?.path||cfg.localRoot?'当前在服务器上读写文件。切换后可在本聊天继续修改本机项目，保留已有上下文和旧 CC 窗口。':'请从左侧对应项目进入工作台，选择要共享的本机目录。';
    else if(connected)caption='在左侧对话，在右侧 Claude 终端确认操作。';
    else if(recovering)caption=(manuallyOff?'点击重连会启动虚拟机。':'')+'重连后继续本聊天，已保存的文件仍在项目中。';
    else if(bound)caption='继续使用本聊天已绑定的云端会话。';
@@ -556,6 +568,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
       h('div',{className:'cw-actions'},
        h('button',{className:'cw-btn cw-primary','data-action':'connect',disabled:!!working||powerBusy,'aria-busy':working==='claude',onClick:()=>start('claude')},working==='claude'?h('span',{className:'cw-spinner'}):h(Icon,{name:recovering?'refresh':'terminal',size:16}),working==='claude'?'正在连接…':phase==='legacy'?'继续服务器会话':connected?'打开 Claude 终端':recovering?'重连当前会话':bound?'继续会话':'接入 Claude'),
        h('button',{className:'cw-btn cw-secondary','data-action':'shell',disabled:!ready||!!working,onClick:()=>start('shell')},h(Icon,{name:'terminal',size:16}),'服务器终端')),
+      bound&&!cfg.vmTools&&h('button',{className:'cw-btn','data-action':'migrate',disabled:!!working||powerBusy||!(workspace?.path||cfg.localRoot),'aria-busy':working==='migrate',onClick:migrate},working==='migrate'?h('span',{className:'cw-spinner'}):h(Icon,{name:'folder',size:16}),working==='migrate'?'正在切换…':'切换到本机虚拟机'),
       !cfg.vmTools&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('sync')},h(Icon,{name:'folder',size:14}),'文件同步',h(Icon,{name:'arrow',size:13})),
       !cfg.structuredChat&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('image')},'上传剪贴板图片'))),
 

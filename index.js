@@ -1,16 +1,14 @@
 import {outboundText} from './outbound.mjs';
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
-import path from 'node:path';
 import {structuredStream} from './structured-chat.mjs';
 import {VMManager} from './vm-manager.mjs';
 import {titleForRequest,installTitleRepair} from './session-title.mjs';
 import {storedRoute} from './session-binding.mjs';
+import {beginSessionTurn,serverTerminal} from './session-migration.mjs';
 const route='dsh-remote-claude', model='claude-code';
 const info={provider:route,id:model,name:'Claude Code · 远程工作区',inputModalities:['text','image']};
-const routesDir=()=>path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes');
 export const name='dsh-remote-claude-model';
 export function apply(ctx){
  const manager=new VMManager();
@@ -40,13 +38,15 @@ export async function* stream(request,host={}){
  }
  const id=request.sessionId;
  if(!id)throw Error('此模型仅用于已连接的 Claude 工作区会话。');
- let cfg;
- try{cfg=JSON.parse(readFileSync(path.join(routesDir(),createHash('sha256').update(id).digest('hex')+'.json'),'utf8'))}
- catch{throw Error('请在当前工作区点一次「接入 Claude」以绑定左右会话。')}
+ const finish=beginSessionTurn(id);
+ try{yield* conversation(request,host,id)}finally{finish()}
+}
+async function* conversation(request,host,id){
+ const cfg=await storedRoute(id);
+ if(!cfg)throw Error('请在当前工作区点一次「接入 Claude」以绑定左右会话。');
  if(cfg.structuredChat){yield* structuredStream(request,cfg,host);return;}
  const text=outboundText(request.messages);
- const key=createHash('sha256').update(cfg.host+'\n'+cfg.project).digest('hex').slice(0,16);
- const remoteSession=cfg.activeTmuxSession || 'dsh-'+key+'-claude';
+ const remoteSession=serverTerminal(cfg);
  if(!/^dsh-[a-f0-9]{16,32}-claude$/.test(remoteSession))throw Error('会话绑定无效，请重新接入。');
  const script=readFileSync(new URL('./chat-peer.py',import.meta.url)).toString('base64');
  const cp=spawn('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10','-o','SendEnv=-*','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=4',...(cfg.identity?['-i',cfg.identity,'-o','IdentitiesOnly=yes']:[]),cfg.host,`python3 -c "import base64;exec(base64.b64decode('${script}'))"`],{windowsHide:true,signal:request.signal});

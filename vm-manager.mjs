@@ -5,6 +5,7 @@ import {VMBridge} from './vm-runtime.mjs';
 import {assertShareRoot,ensureGuestRunning} from './vm-controller.mjs';
 import {atomicJson,readJson} from './desktop-state.mjs';
 import {VMPower,POWER_VERSION,powerRoot} from './vm-power.mjs';
+import {migrateBinding} from './session-migration.mjs';
 
 // The long-lived DSH backend owns connections. A temporary sync-terminal command
 // only writes a connect request; it must not own the executor's process lifetime.
@@ -14,7 +15,7 @@ export class VMManager{
  publish(){
   const task=(this.publishing||Promise.resolve()).catch(()=>{}).then(async()=>{
    const power=await this.power.status();
-   await atomicJson(path.join(powerRoot(this.profileBase),'vm-manager.json'),{engine:'claude-mcp-v2',modePolicy:'vm-multi-v1',powerVersion:POWER_VERSION,activeConversations:this.bridges.size,warming:power.state==='starting',guestReady:power.state==='running',power,pid:process.pid,updatedAt:Date.now()});this.lastHeartbeat=Date.now();
+   await atomicJson(path.join(powerRoot(this.profileBase),'vm-manager.json'),{engine:'claude-mcp-v2',modePolicy:'vm-multi-v1',historyFork:true,powerVersion:POWER_VERSION,activeConversations:this.bridges.size,warming:power.state==='starting',guestReady:power.state==='running',power,pid:process.pid,updatedAt:Date.now()});this.lastHeartbeat=Date.now();
   });this.publishing=task;return task;
  }
  async powerRequest(request,folder){
@@ -60,8 +61,14 @@ export class VMManager{
    assertShareRoot(root,path.dirname(cfg.guest.identity));
    const saved=await readJson(path.join(folder,'config.json'));
    if(saved&&path.resolve(saved.localRoot).toLowerCase()!==root.toLowerCase())throw Error('聊天已绑定其他项目');
-   const bridge=await this.ensureBridge({...cfg,localRoot:root},request);
-   reply={ok:true,state:{...bridge.lastState,connectionId:bridge.connectionId,scope:cfg.scope}};
+   const checked={...cfg,localRoot:root};
+   if(request.migrate===true){
+    const route=await migrateBinding(checked,()=>this.ensureBridge(checked,request),this.profileBase);
+    reply={ok:true,state:route};
+   }else{
+    const bridge=await this.ensureBridge(checked,request);
+    reply={ok:true,state:{...bridge.lastState,connectionId:bridge.connectionId,scope:cfg.scope}};
+   }
   }catch(error){reply={ok:false,error:String(error.message)};}
   await atomicJson(path.join(folder,'connection-results',id+'.json'),reply);
  }
@@ -95,7 +102,7 @@ export class VMManager{
     await atomicJson(path.join(stateDirectory,'config.json'),cfg);
     bridge=new VMBridge(cfg);
     this.bridges.set(scope,bridge);
-    await bridge.start();
+    await bridge.start({migrate:intent.migrate===true});
    });
    if(this.closed)throw Error('DSH 后台正在退出');
    void this.observeBridge(scope,bridge).catch(error=>{this.backgroundError=String(error.message)});

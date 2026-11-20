@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import {mkdir, open, readFile, link, unlink, lstat} from 'node:fs/promises';
 import path from 'node:path';
+import {storedRoute} from './session-binding.mjs';
 import {atomicJson, readJson, desktopDirectory, desktopScope, listDesktopRequests,
   recordDesktopRequest, remoteDesktopResult, validateDesktopRequest, MAX_ARTIFACT_BYTES} from './desktop-state.mjs';
 
@@ -197,7 +198,7 @@ export async function connectDesktop(cfg, sessionId) {
   process.once('SIGHUP',stop);
   try {
     const routeFile = path.join(process.env.LOCALAPPDATA,'DSH-Remote-Claude','chat-routes',createHash('sha256').update(sessionId).digest('hex') + '.json');
-    const bound = await readJson(routeFile);
+    const bound = await storedRoute(sessionId);
     if (!bound || !bound.desktopTools || bound.host !== cfg.host || bound.project !== cfg.project || path.resolve(bound.localRoot).toLowerCase() !== path.resolve('.').toLowerCase()) throw Error('工作区绑定已改变，请重新接入');
     await installRemote(cfg,scope);
     if (stopped) throw Error('桌面连接已取消');

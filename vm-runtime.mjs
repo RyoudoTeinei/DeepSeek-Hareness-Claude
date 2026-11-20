@@ -52,7 +52,7 @@ export async function prepareVMCloud(cfg){
  if(!binding){binding={token:randomBytes(32).toString('hex'),instanceId:cfg.guest.instanceId};await atomicJson(path.join(cfg.stateDirectory,'binding.json'),binding);}
  if(binding.instanceId!==cfg.guest.instanceId)throw Error('VM identity changed; use a new bridge binding');
  const sources={};for(const name of ['vm-relay.py','vm-mcp.py'])sources[name]=await readFile(path.join(here,name),'utf8');
- const nativeSources={};if(cfg.nativeChat)for(const name of ['structured-peer.py','native-peer.py','chat-peer.py'])nativeSources[name]=await readFile(path.join(here,name),'utf8');
+ const nativeSources={};if(cfg.nativeChat)for(const name of ['structured-peer.py','native-peer.py','chat-peer.py','vm-fork.py'])nativeSources[name]=await readFile(path.join(here,name),'utf8');
  const sessionPolicy=await readFile(path.join(here,'vm-session.py'),'utf8');
  const script=`import pathlib,json,sys,os,tempfile,subprocess,importlib.util
 os.umask(0o077)
@@ -159,7 +159,13 @@ export class VMBridge{
    if(!this.closed&&this.activeTools===0)await this.state('connected');
   }
  }
- async start(){
+ async forkHistory(source){
+  const {scope,cloud,remoteModel}=this.cfg;
+  if(this.closed||!this.native?.info)throw Error('虚拟机文件工具尚未连接。');
+  const command='python3 "$HOME/'+VM_CLOUD_ROOT+'/vm-fork.py" '+scope+' '+quote(source)+' '+quote(remoteModel||'');
+  return JSON.parse(await processRun('ssh',[...sshArguments(cloud),'-T',cloud.host,command],'',90000));
+ }
+ async start({migrate=false}={}){
   await mkdir(this.cfg.stateDirectory,{recursive:true});
   const oldLease=await readJson(path.join(path.dirname(this.cfg.guest.identity),'bridge.lock'));
   if(oldLease){let active=true;try{process.kill(oldLease.pid,0)}catch(error){if(error.code==='ESRCH')active=false;}if(active)throw Error('旧版单会话执行器仍在运行，请重启 DSH 后使用多会话。');}
@@ -198,7 +204,7 @@ export class VMBridge{
    });
   });
   await ready;
-  if(this.cfg.nativeChat)await processRun('ssh',[...sshArguments(this.cfg.cloud),'-T',this.cfg.cloud.host,'python3 "$HOME/'+VM_CLOUD_ROOT+'/native-peer.py" ensure '+this.cfg.scope+' '+quote(this.cfg.remoteModel||'')],'',60000);
+  if(this.cfg.nativeChat&&!migrate)await processRun('ssh',[...sshArguments(this.cfg.cloud),'-T',this.cfg.cloud.host,'python3 "$HOME/'+VM_CLOUD_ROOT+'/native-peer.py" ensure '+this.cfg.scope+' '+quote(this.cfg.remoteModel||'')],'',60000);
   liveBridges.set(this.cfg.scope,this);await this.state('connected',{executor:'claude-mcp',executorVersion:VM_EXECUTOR_VERSION,authenticated:false});
   this.controlTimer=setInterval(async()=>{
    const control=await readJson(path.join(this.cfg.stateDirectory,'control.json'));

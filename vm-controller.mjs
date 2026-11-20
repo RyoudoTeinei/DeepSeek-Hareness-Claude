@@ -81,6 +81,7 @@ export async function requestVMPower(action,confirmedConnections,confirmedBusy){
 }
 export async function connectVM(route,sessionId,localRoot,options={}){
  const manager=await readyPowerManager();
+ if(options.migrate&&!manager.historyFork)throw Error('请先从托盘退出并重新打开 DSH，加载支持会话迁移的后台。');
  const scope=desktopScope(sessionId,route.host,route.project),folder=directory(scope);
  const profile=await readJson(registry());
  if(!profile?.guest)throw Error('本地虚拟机执行器未配置，请先安装并验证独立执行环境');
@@ -94,9 +95,9 @@ export async function connectVM(route,sessionId,localRoot,options={}){
  const cfg=validateVMConfig({scope,cloud:{host:route.host,identity:route.identity||''},guest:{...profile.guest,root:'/workspaces/'+scope},localRoot:root,stateDirectory:folder,hostPython:profile.hostPython,network:'isolated',nativeChat:true,vmEngine:'claude-mcp-v2',sessionId,project:route.project,remoteModel:route.remoteModel||''});
  const started=Date.now(),id=randomBytes(16).toString('hex');
  const receipt=path.join(folder,'connection-results',id+'.json');
- const request={id,cfg,createdAt:started,explicitWake:options.explicitWake===true,managerPid:manager.pid};
+ const request={id,cfg,createdAt:started,explicitWake:options.explicitWake===true,migrate:options.migrate===true,managerPid:manager.pid};
  await atomicJson(path.join(powerRoot(process.env.LOCALAPPDATA),'connect-inbox',id+'.json'),request);
- while(Date.now()-started<120000){
+ while(Date.now()-started<(options.migrate?220000:120000)){
   const reply=await readJson(receipt);
   if(reply){
    await unlink(receipt).catch(()=>{});
@@ -105,7 +106,7 @@ export async function connectVM(route,sessionId,localRoot,options={}){
   }
   await new Promise(resolve=>setTimeout(resolve,200));
  }
- throw Error('连接本地虚拟机超时，请确认 DSH 已加载新版插件服务及执行器已启动');
+ throw Error(options.migrate?'仍未收到迁移结果，请重新打开工作台查看当前绑定。':'连接本地虚拟机超时，请确认 DSH 已加载新版插件服务及执行器已启动');
 }
 export async function stageVMAttachment(scope,expectedRoot,name,data){
  const cfg=await readJson(path.join(directory(scope),'config.json'));
