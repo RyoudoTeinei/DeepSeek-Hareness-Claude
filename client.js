@@ -433,11 +433,17 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
      h('div',{className:'cw-actions'},h('button',{className:'cw-btn cw-small',ref:cancelButton,disabled:!!busy,onClick:cancelReview},'取消'),h('button',{className:'cw-btn cw-small cw-primary',disabled:!!busy||disabled,onClick:()=>operate('stop',review)},'断开全部并关闭'))),
     h(ErrorNotice,{message:error||power.error}));
   }
+  function workbenchConfig(binding,workspace){
+   // Pre-VM routes omit vmTools. Use the same saved route as session-connect.
+   if(binding?.bound)return binding.route;
+   let saved={};
+   try{saved=JSON.parse(localStorage.getItem(workspace?id+':'+workspace.workspaceId:id))||{}}catch{}
+   return {host:'',project:workspace?.remoteName||'my-test',identity:'',...saved,structuredChat:true,vmTools:true,desktopTools:false};
+  }
   function Body({useTabInfo,launch,workspace,rpc,sessionId}){
    const tab=useTabInfo?useTabInfo().tab:null;
    const tabVisible=tab?.visible!==false;
-   const [cfg,set]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(workspace?id+':'+workspace.workspaceId:id))||defaults()}catch{return defaults()}});
-   function defaults(){return {host:'',project:workspace?.remoteName||'my-test',identity:'',structuredChat:true,vmTools:true}}
+   const [cfg,set]=React.useState(()=>workbenchConfig(null,workspace));
    const [bound,setBound]=React.useState(false),[ready,setReady]=React.useState(false),[settingsOpen,showSettings]=React.useState(false);
    const [notice,notify]=React.useState(null),[working,setWorking]=React.useState(''),[syncOpen,showSync]=React.useState(false);
    const [advanced,showAdvanced]=React.useState(false),[touched,setTouched]=React.useState({});
@@ -459,9 +465,9 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     let active=true;setReady(false);setBound(false);notify(null);setConfigError('');showAdvanced(false);setTouched({});
     void rpc({action:'session-config'}).then(result=>{
      if(!active)return;
-     let saved={};try{saved=JSON.parse(localStorage.getItem(workspace?id+':'+workspace.workspaceId:id))||{}}catch{}
      setBound(!!result.bound);showSettings(!result.bound);
-     set({...defaults(),...saved,...(result.bound?result.route:{structuredChat:true,vmTools:true,desktopTools:false})});setReady(true);
+     set(workbenchConfig(result,workspace));
+     setReady(true);
     }).catch(error=>{if(active)setConfigError(error.message)});
     return()=>{active=false};
    },[sessionId,workspace?.workspaceId,configAttempt]);
@@ -507,7 +513,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
    const connected=['connected','running'].includes(phase),title=workspace?.title||'Claude 工作区';
    const recovering=ready&&bound&&cfg.vmTools&&['failed','offline'].includes(phase);
    let caption='云端 Claude 将通过虚拟机读写上方的本机目录。';
-   if(!cfg.vmTools)caption='沿用本聊天的服务器执行环境。';
+   if(!cfg.vmTools)caption='本聊天在服务器上读写文件。要通过虚拟机读写本机项目，请在此工作区新建聊天。';
    else if(connected)caption='在左侧对话，在右侧 Claude 终端确认操作。';
    else if(recovering)caption=(manuallyOff?'点击重连会启动虚拟机。':'')+'重连后继续本聊天，已保存的文件仍在项目中。';
    else if(bound)caption='继续使用本聊天已绑定的云端会话。';
@@ -548,7 +554,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
       h('div',{className:'cw-connect-area'},
       h('p',{className:'cw-connect-caption'},caption),
       h('div',{className:'cw-actions'},
-       h('button',{className:'cw-btn cw-primary','data-action':'connect',disabled:!!working||powerBusy,'aria-busy':working==='claude',onClick:()=>start('claude')},working==='claude'?h('span',{className:'cw-spinner'}):h(Icon,{name:recovering?'refresh':'terminal',size:16}),working==='claude'?'正在连接…':connected?'打开 Claude 终端':recovering?'重连当前会话':bound?'继续会话':'接入 Claude'),
+       h('button',{className:'cw-btn cw-primary','data-action':'connect',disabled:!!working||powerBusy,'aria-busy':working==='claude',onClick:()=>start('claude')},working==='claude'?h('span',{className:'cw-spinner'}):h(Icon,{name:recovering?'refresh':'terminal',size:16}),working==='claude'?'正在连接…':phase==='legacy'?'继续服务器会话':connected?'打开 Claude 终端':recovering?'重连当前会话':bound?'继续会话':'接入 Claude'),
        h('button',{className:'cw-btn cw-secondary','data-action':'shell',disabled:!ready||!!working,onClick:()=>start('shell')},h(Icon,{name:'terminal',size:16}),'服务器终端')),
       !cfg.vmTools&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('sync')},h(Icon,{name:'folder',size:14}),'文件同步',h(Icon,{name:'arrow',size:13})),
       !cfg.structuredChat&&h('button',{className:'cw-text-button',disabled:!ready||!!working,onClick:()=>start('image')},'上传剪贴板图片'))),
