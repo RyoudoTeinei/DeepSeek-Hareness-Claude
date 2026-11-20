@@ -3,19 +3,16 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 let registered;
-const source=readFileSync(new URL('../client.js',import.meta.url),'utf8').replace('return {inject,apply};','return {inject,apply,activityRows,toolPresentation,workbenchStore,sidebarModelMark};');
+const source=readFileSync(new URL('../client.js',import.meta.url),'utf8').replace('return {inject,apply};','return {inject,apply,activityRows,toolPresentation,workbenchStore,workbenchTab};');
 const document={hidden:false,addEventListener(){},removeEventListener(){}};
 vm.runInNewContext(source,{document,setTimeout,clearTimeout,TextEncoder,btoa,window:{__ModuleLoader__:{load:value=>registered=value}}});
-const api=registered.factory(()=>({createElement(){}}));
-test('sidebar distinguishes chats in one workspace and follows later model selections',()=>{
- const claude={provider:'dsh-remote-claude',model:'claude-code'},deepseek={provider:'deepseek',model:'deepseek-chat'};
- const entry=(next,lastUsed)=>({displayTitle:'使用 Claude 分析项目',projectionValues:{modelSelection:{next,lastUsed}}});
- assert.equal(api.sidebarModelMark(entry(null,claude)),'Claude');
- assert.equal(api.sidebarModelMark(entry(deepseek,claude)),'DeepSeek');
- assert.equal(api.sidebarModelMark(entry(claude,deepseek)),'Claude');
- assert.equal(api.sidebarModelMark(entry({provider:'other',model:'other'},claude)),null);
- assert.equal(api.sidebarModelMark(entry(null,null)),null);
- assert.equal(api.sidebarModelMark(undefined),null);
+const api=registered.factory(()=>({createElement:(type,props)=>({type,props})}));
+test('DSH retains the workbench when switching tabs and its guide icon works offline',()=>{
+ assert.equal(api.workbenchTab.keepMounted,true);
+ const icon=api.workbenchTab.guide[0].icon({size:26});
+ assert.equal(icon.type,'img');
+ assert.match(icon.props.src,/^data:image\/svg\+xml,/);
+ assert.equal(icon.props.width,26);
 });
 test('activity pairs concurrent results by call ID and preserves descriptions',()=>{
  const rows=api.activityRows([{id:'one',tool:'Bash',status:'started',detail:'First command',time:1},{id:'two',tool:'Bash',status:'started',detail:'Second command',time:2},{id:'two',tool:'Bash',status:'failed',time:5},{id:'one',tool:'Bash',status:'completed',time:6}]);

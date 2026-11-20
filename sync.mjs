@@ -46,7 +46,7 @@ async function main(){
    readJson(path.join(desktopDirectory(scope),'structured','status.json'),empty),
    route.vmTools?vmStatus(scope):null
   ]);
-  return {activity:{...activity,vm},power};
+  return {activity:{...activity,vm},power,route};
  }
  if(action==='vm-power-status')return vmPowerStatus();
  if(action==='vm-power-start')return requestVMPower('start');

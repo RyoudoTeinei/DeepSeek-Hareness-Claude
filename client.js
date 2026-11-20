@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
    return 'node (Resolve-Path '+quote(script)+') --launch '+quote(btoa(encoded))+'\r';
   }
   const labels={claude:'接入 Claude',shell:'服务器终端',sync:'文件同步 · 选择文件 / 推送 / 拉取',image:'上传剪贴板图片'};
-  const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace','sessions'];
+  const inject=['sidebarRight','sidebarRightTabs','slots','webTerminals','workspaces','uiWorkspace'];
   // DSH does not expose its xterm instance. Keep native selection in the existing
   // renderer, and send wheel reports explicitly through the supported input API.
   function installTerminalMouse(root,getModel){
@@ -60,75 +60,36 @@ window.__ModuleLoader__.load({
     root.removeEventListener('wheel',wheel,true);root.removeEventListener('mousedown',down,true);root.removeEventListener('keydown',key,true);
    }};
   }
-  // A sidebar row can belong to a chat which has never been opened in this tab.
-  // Read the published model selection, including changes for the next turn.
-  function sidebarModelMark(entry){
-   const selection=entry?.projectionValues?.modelSelection;
-   const route=selection?.next??selection?.lastUsed;
-   if(!route)return null;
-   const provider=String(route.provider||'').toLowerCase(),model=String(route.model||'').toLowerCase();
-   if(provider==='dsh-remote-claude'||/^claude-code(?:$|[-:])/.test(provider))return 'Claude';
-   if(/^deepseek(?:$|[-_:/])/.test(model))return 'DeepSeek';
-   if(/^claude(?:$|[-_:/])/.test(model))return 'Claude';
-   if(/^(?:dsh-llm-)?deepseek(?:$|[-_:/])/.test(provider))return 'DeepSeek';
-   return null;
+  // Claude's logomark, embedded for offline use (Waishnav/devspace, website/logos/claude.svg).
+  const claudeMark='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#D97757"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>');
+  function ClaudeLogo({size=24,className=''}){
+   return h('img',{className:'cw-claude-logo '+className,src:claudeMark,width:size,height:size,alt:'',draggable:false});
   }
-  function SessionProviderMark({sessionId,list,leading=false}){
-   const subscribe=React.useCallback(fn=>list.subscribe(fn),[list]);
-   const read=React.useCallback(()=>sidebarModelMark(list.getSnapshot()?.byId?.[sessionId]),[list,sessionId]);
-   const name=React.useSyncExternalStore(subscribe,read,read);
-   if(!name)return null;
-   return leading
-    ?h('span',{className:'cw-provider-symbol','data-provider':name,title:name,role:'img','aria-label':'会话模型：'+name},
-      h('span',{className:'cw-provider-initial','aria-hidden':true},name[0]),h('span',{className:'cw-provider-word','aria-hidden':true},name))
-    :h('span',{className:'cw-provider-mark','data-provider':name,title:'会话模型：'+name},name);
-  }
+  const workbenchTab={
+   id,kind,multiple:true,keepMounted:true,priority:'builtin',title:()=>'Claude 工作台',
+   guide:[{id:'new',order:21,title:()=>'Claude 工作台',description:()=>'云端对话与本地项目',icon:ClaudeLogo}]
+  };
   const WORKBENCH_CSS=`
 /* Hallmark · redesign: app · DSH desktop shell and Claude workspace */
-[data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]),[data-row-key^="session:"]:has(.cw-provider-mark[data-provider=Claude]){
- --cw-sidebar-ink:#9f482e;--cw-sidebar-edge:#c76c4c;--cw-sidebar-wash:#f5e6dd;--cw-sidebar-hover:#f9eee7;
-}
-body[data-ds-dark-theme] :is([data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]),[data-row-key^="session:"]:has(.cw-provider-mark[data-provider=Claude])){
- --cw-sidebar-ink:#edb398;--cw-sidebar-edge:#cb896c;--cw-sidebar-wash:#49342e;--cw-sidebar-hover:#322928;
-}
-[data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]) :is([class*="_folder"],[class*="_projectText"]),
-[data-row-key^="workspace:"]>[data-dsh-claude-control=open]{color:var(--cw-sidebar-ink)}
-[data-row-key^="workspace:"]>[data-dsh-claude-control=open]{display:inline-flex;align-items:center;gap:3px;border-radius:5px;padding:2px 5px;font-size:11px;font-weight:550;line-height:16px;opacity:1}
-[data-row-key^="workspace:"]>[data-dsh-claude-control=open]::after{content:'›';font-size:14px}
+[data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]){--cw-sidebar-ink:#9f482e;--cw-sidebar-wash:#f5e6dd}
+body[data-ds-dark-theme] [data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]){--cw-sidebar-ink:#edb398;--cw-sidebar-wash:#49342e}
+[data-row-key^="workspace:"]:has(>[data-dsh-claude-control=open]) :is([class*="_folder"],[class*="_projectText"]){color:var(--cw-sidebar-ink)}
+[data-row-key^="workspace:"]>[data-dsh-claude-control=open]{display:inline-flex;align-items:center;gap:4px;flex:none;color:var(--cw-sidebar-ink);font-size:11px;line-height:16px;opacity:1}
 [data-row-key^="workspace:"]>[data-dsh-claude-control=open]:hover{background:var(--cw-sidebar-wash)}
-.cw-provider-mark{display:inline-flex;align-items:center;flex:none;white-space:nowrap;line-height:16px;font-size:10.5px;font-weight:550;padding:0 5px;border-radius:4px;margin-inline-start:4px}
-.cw-provider-mark[data-provider=Claude]{color:var(--cw-sidebar-ink);background:var(--cw-sidebar-wash)}
-.cw-provider-mark[data-provider=DeepSeek]{color:var(--dsw-alias-link,#3866b5);background:color-mix(in srgb,var(--dsw-alias-link,#3866b5) 8%,transparent)}
-[data-row-key^="session:"]:has(.cw-provider-mark[data-provider=Claude]):hover{background-color:var(--cw-sidebar-hover)}
-[data-row-key^="session:"][aria-selected=true]:has(.cw-provider-mark[data-provider=Claude]){background-color:var(--cw-sidebar-wash);box-shadow:inset 2px 0 var(--cw-sidebar-edge)}
-[data-row-key^="session:"][aria-selected=true] .cw-provider-mark[data-provider=Claude]{background:transparent}
-.cw-provider-symbol{display:inline-grid;place-items:center;flex:none;width:16px;height:16px;border-radius:4px;font:600 11px/1 system-ui;color:var(--dsw-alias-link,#3866b5);background:color-mix(in srgb,currentColor 10%,transparent)}
-.cw-provider-symbol[data-provider=Claude]{font:700 13px/1 Georgia,serif;color:var(--cw-sidebar-ink);background:var(--cw-sidebar-wash)}
-.cw-provider-word{display:none}
-.cw-provider-symbol[data-provider=DeepSeek],.cw-provider-mark[data-provider=DeepSeek]{color:#345a98}
-body[data-ds-dark-theme] :is(.cw-provider-symbol,.cw-provider-mark)[data-provider=DeepSeek]{color:#a6c4f4}
-[data-row-key^="session:"]:has(.cw-provider-symbol){container:cw-provider-row / inline-size}
-@container cw-provider-row (min-width:270px){
- [class*="_slot"]:has(.cw-provider-symbol){width:50px}
- .cw-provider-symbol,.cw-provider-symbol[data-provider=Claude]{width:100%;height:18px;font:600 10.5px/1 system-ui}
- .cw-provider-initial{display:none}.cw-provider-word{display:inline}
-}
-[data-row-key^="session:"]:has(.cw-provider-symbol) .cw-provider-mark{display:none}
-[data-row-key^="session:"][aria-selected=true] .cw-provider-symbol[data-provider=Claude]{background:var(--cw-sidebar-ink);color:var(--cw-sidebar-wash)}
-[data-row-key^="workspace:"]>[data-dsh-claude-control=open]{border:1px solid color-mix(in srgb,var(--cw-sidebar-ink) 20%,transparent);border-radius:6px;padding-inline:6px;font-size:10px}
+.cw-claude-logo{display:inline-block;flex:none;vertical-align:middle}
 .dsh-claude-workspace,.dsh-sync-pane,.dsh-desktop-requests,[data-dsh-claude-control],.dsh-quota{
  --cw-text:var(--dsw-alias-label-primary,#202328);--cw-muted:var(--dsw-alias-label-secondary,#777d87);--cw-faint:var(--dsw-alias-label-tertiary,#9298a2);
  --cw-bg:var(--dsw-alias-bg-base,#fff);--cw-surface:var(--dsw-alias-bg-layer-1,#fff);--cw-soft:var(--dsw-alias-interactive-bg-hover,#f5f6f8);
  --cw-border:var(--dsw-alias-border-l2,#e7e9ed);--cw-blue:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4176e6) 94%,var(--cw-text));--cw-green:color-mix(in srgb,var(--dsw-alias-state-success-primary,#22c55e) 65%,var(--cw-text));--cw-red:var(--dsw-alias-state-error-primary,#d54747);--cw-mono:var(--dsw-font-mono,Consolas,monospace)
 }
-.cw-icon{display:inline-block;flex:none;vertical-align:middle}.cw-guide-icon{color:#bd7659}.cw-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.cw-icon{display:inline-block;flex:none;vertical-align:middle}.cw-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .dsh-claude-workspace{box-sizing:border-box;width:100%;height:100%;overflow:auto;container-type:inline-size;background:var(--cw-bg);color:var(--cw-text);font:inherit;font-size:14px;line-height:1.5;padding:28px 26px}
 .dsh-claude-workspace *{box-sizing:border-box}.cw-content{width:100%;max-width:600px;margin:0 auto;display:flex;flex-direction:column;gap:22px}
 .dsh-claude-workspace{--cw-accent:#98482f;--cw-on-accent:#fff;--cw-danger:#983d36;--cw-on-danger:#fff;--cw-tint:color-mix(in srgb,var(--cw-accent) 6%,var(--cw-bg))}
 body[data-ds-dark-theme] .dsh-claude-workspace{--cw-accent:#edb398;--cw-on-accent:#33231d;--cw-danger:#edada4;--cw-on-danger:#381b19}
 .cw-project-header{display:grid;gap:16px;min-width:0}
 .cw-project-identity{display:flex;align-items:center;gap:12px}
-.cw-project-icon{width:44px;height:44px;display:grid;place-items:center;flex:none;border-radius:12px;background:var(--cw-tint);color:var(--cw-accent);border:1px solid color-mix(in srgb,var(--cw-accent) 20%,transparent)}
+.cw-project-icon{width:40px;height:44px;display:grid;place-items:center;flex:none}
 .cw-project-name{flex:1;min-width:0}.cw-project-header h1{margin:0;font-size:24px;font-weight:650;line-height:1.25;letter-spacing:-.03em;text-wrap:balance;overflow-wrap:anywhere}
 .cw-project-name>span{font-size:12px;color:var(--cw-accent)}
 .cw-route{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;align-items:baseline;margin:0;font-size:12px}
@@ -261,23 +222,29 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
    },schedule};
    statusStores.set(sessionId,store);return store;
   }
-  function useWorkspaceStatus(rpc,sessionId,enabled,panel){
+  function useWorkspaceStatus(rpc,sessionId,enabled,panel,tabVisible){
    const [snapshot,setSnapshot]=React.useState(emptySnapshot);
    const rpcRef=React.useRef(rpc),storeRef=React.useRef();rpcRef.current=rpc;
+   const shown=React.useRef(tabVisible);
+   React.useEffect(()=>{
+    shown.current=tabVisible;
+    if(tabVisible)void storeRef.current?.refresh();else storeRef.current?.schedule();
+   },[tabVisible]);
    React.useEffect(()=>{
     setSnapshot(emptySnapshot());
     if(!enabled||!panel.current)return;
     const store=workbenchStore(sessionId);storeRef.current=store;
-    const client={read:()=>rpcRef.current({action:'workbench-status'}),notify:setSnapshot,visible:false};
+    let onScreen=false;
+    const client={read:()=>rpcRef.current({action:'workbench-status'}),notify:setSnapshot,get visible(){return shown.current&&onScreen}};
     const unsubscribe=store.subscribe(client);
     const observer=new IntersectionObserver(entries=>{
-     client.visible=entries.some(entry=>entry.isIntersecting);
+     onScreen=entries.some(entry=>entry.isIntersecting);
      if(client.visible)void store.refresh();else store.schedule();
     });
     observer.observe(panel.current);
     return ()=>{observer.disconnect();unsubscribe();storeRef.current=null};
    },[sessionId,enabled]);
-   return {state:snapshot.activity,power:snapshot.power,error:snapshot.error,refresh:async()=>{
+   return {state:snapshot.activity,power:snapshot.power,route:snapshot.route,error:snapshot.error,refresh:async()=>{
     const store=storeRef.current;
     if(store)await store.invalidate();
    }};
@@ -321,15 +288,16 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     off=model.state.subscribe(tick);unmount=model.mount();tick();
    })}finally{clearTimeout(timer);off?.();unmount?.();ctx.webTerminals.close(session,uid,uid,model.id)}
   }
-  function SyncPanel({rpc,cfg,workspace,back,terminal}){
+  function SyncPanel({rpc,cfg,workspace,back,terminal,tabVisible}){
    const [data,setData]=React.useState({branch:'',changes:[]}),[sel,select]=React.useState(new Set()),[q,filter]=React.useState(''),[msg,message]=React.useState(''),[busy,lock]=React.useState(false),[notice,note]=React.useState(''),[confirm,review]=React.useState('');
    const guard=React.useRef(false);
    const [watch,setWatch]=React.useState(null),[watchError,setWatchError]=React.useState('');
    React.useEffect(()=>{
+    if(!tabVisible)return;
     let alive=true,pending=false;
     async function read(){if(pending||guard.current)return;pending=true;try{const result=await rpc({...cfg,action:'watch-status'});if(alive){setWatch(result);setWatchError('')}}catch(e){if(alive)setWatchError(e.message)}finally{pending=false}}
     void read();const timer=setInterval(read,15000);return ()=>{alive=false;clearInterval(timer)};
-   },[cfg.host,cfg.project,workspace?.path]);
+   },[cfg.host,cfg.project,workspace?.path,tabVisible]);
    async function switchWatch(){
     if(guard.current||!watch)return;
     guard.current=true;lock(true);
@@ -366,11 +334,12 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     h('output',{role:'status'},notice));
   }
 
-  function DesktopRequests({rpc,cfg}){
+  function DesktopRequests({rpc,cfg,tabVisible}){
    const [data,setData]=React.useState({connection:'disconnected',requests:[]});
    const [error,setError]=React.useState('');
    const busy=React.useRef(false);
    React.useEffect(()=>{
+    if(!tabVisible)return;
     let active=true;
     async function refresh(){
      if(busy.current)return;busy.current=true;
@@ -379,7 +348,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     }
     void refresh();const timer=setInterval(refresh,4000);
     return ()=>{active=false;clearInterval(timer)};
-   },[cfg.host,cfg.project]);
+   },[cfg.host,cfg.project,tabVisible]);
    async function decide(id,approved){
     if(busy.current)return;busy.current=true;
     try{setData(await rpc({...cfg,action:'desktop-decide',requestId:id,approved}));setError('')}
@@ -466,6 +435,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
   }
   function Body({useTabInfo,launch,workspace,rpc,sessionId}){
    const tab=useTabInfo?useTabInfo().tab:null;
+   const tabVisible=tab?.visible!==false;
    const [cfg,set]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(workspace?id+':'+workspace.workspaceId:id))||defaults()}catch{return defaults()}});
    function defaults(){return {host:'',project:workspace?.remoteName||'my-test',identity:'',structuredChat:true,vmTools:true}}
    const [bound,setBound]=React.useState(false),[ready,setReady]=React.useState(false),[settingsOpen,showSettings]=React.useState(false);
@@ -495,9 +465,13 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     }).catch(error=>{if(active)setConfigError(error.message)});
     return()=>{active=false};
    },[sessionId,workspace?.workspaceId,configAttempt]);
-   const {state,power,error,refresh}=useWorkspaceStatus(rpc,sessionId,ready&&!syncOpen,panel);
+   const {state,power,route,error,refresh}=useWorkspaceStatus(rpc,sessionId,ready&&!syncOpen,panel,tabVisible);
+   // Another pane can bind an open first-use form while this tab is hidden.
+   React.useEffect(()=>{
+    if(ready&&!bound&&route){set(route);setBound(true);showSettings(false)}
+   },[ready,bound,route]);
    React.useEffect(()=>{if(notice?.kind!=='success')return;const timer=setTimeout(()=>notify(null),5000);return()=>clearTimeout(timer)},[notice]);
-   if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,back:()=>showSync(false),terminal:()=>tab?.actions.openTab('terminal',{})});
+   if(syncOpen)return h(SyncPanel,{rpc,cfg,workspace,tabVisible,back:()=>showSync(false),terminal:()=>tab?.actions.openTab('terminal',{})});
    async function start(op){
     if(actionGuard.current||powerBusy)return;
     actionGuard.current=true;setWorking(op);notify(null);
@@ -560,7 +534,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
    return h('section',{ref:panel,className:'dsh-claude-workspace',onPaste:e=>{if([...e.clipboardData.items].some(i=>i.type.startsWith('image/'))){e.preventDefault();if(cfg.structuredChat)notify({kind:'success',text:'请将图片粘贴到左侧聊天输入框后发送。'});else void start('image')}}},
     h('div',{className:'cw-content'},
      h('header',{className:'cw-project-header'},
-      h('div',{className:'cw-project-identity'},h('span',{className:'cw-project-icon'},h(Icon,{name:'spark',size:24})),
+      h('div',{className:'cw-project-identity'},h('span',{className:'cw-project-icon'},h(ClaudeLogo,{size:30})),
        h('div',{className:'cw-project-name'},h('h1',null,title),h('span',null,'Claude 工作台')),
        h('span',{className:'cw-connection-badge','data-state':phase,role:'status'},h('i'),phaseLabels[phase]||'未连接')),
       h('dl',{className:'cw-route'},workspace&&h(React.Fragment,null,h('dt',null,'本机目录'),h('dd',{title:workspace.path},workspace.path)),
@@ -583,7 +557,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
      ready&&bound&&cfg.structuredChat&&h(AgentStatus,{rpc,cfg,state,refresh,onOpenTerminal:()=>start('claude')}),
      bound&&settings(),
      ready&&h(PowerControls,{key:sessionId,rpc,power,refresh,onBusyChange:setPowerBusy,disabled:!!working}),
-     !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg}),
+     !cfg.structuredChat&&cfg.desktopTools&&cfg.host&&h(DesktopRequests,{rpc,cfg,tabVisible}),
      cfg.vmTools&&bound&&connected&&h('footer',{className:'cw-workspace-footer'},h('button',{className:'cw-text-button cw-disconnect',title:'仅断开本聊天的虚拟机连接',disabled:!!working,onClick:disconnect},h(Icon,{name:'link',size:13}),working==='disconnect'?'正在断开…':'断开连接'))));
   }
 
@@ -722,7 +696,9 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
      for(const w of folders){
       const row=document.querySelector('[data-row-key="'+CSS.escape('workspace:'+w.workspaceId)+'"]');
       if(row && !row.querySelector('[data-dsh-claude-control=open]')){
-       const open=makeButton('Claude 工作台',()=>openFolder(w),'open');
+       const open=makeButton('工作台',()=>openFolder(w),'open');
+       const mark=document.createElement('img');
+       mark.src=claudeMark;mark.alt='';mark.width=15;mark.height=15;mark.draggable=false;open.prepend(mark);
        open.dataset.workspaceId=w.workspaceId;
        open.title='打开 Claude 工作台';open.setAttribute('aria-label','打开 '+(w.title||w.path)+' 的 Claude 工作台');row.append(open);
       }
@@ -775,14 +751,7 @@ body[data-ds-dark-theme] .dsh-claude-workspace{color-scheme:dark}
     tick();const timer=setInterval(tick,1500);
     return ()=>{epoch++;clearInterval(timer);document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);dock.remove();style.remove()};
    });
-   ctx.effect(()=>ctx.sidebarRightTabs.register({id,kind,multiple:true,priority:'builtin',title:()=>'Claude 工作台',guide:[{id:'new',order:21,title:()=>'Claude 工作台',description:()=>'云端对话与本地项目',icon:props=>h(Icon,{...props,name:'spark',className:'cw-guide-icon'})}]}));
-   for(const position of ['leading','trailing']){
-    const name='sidebar.session.row.'+position;
-    ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register(
-     {name,id:position==='leading'?'dsh-remote-claude-symbol':'dsh-remote-claude-provider',order:35},
-     ({sessionId})=>h(SessionProviderMark,{sessionId,list:ctx.sessions.list,leading:position==='leading'})
-    )));
-   }
+   ctx.effect(()=>ctx.sidebarRightTabs.register(workbenchTab));
    for(const [name,component] of [['sidebar.right.pane.tab',Body],['sidebar.right.pane.tab.title',()=>h('span',{className:'dsh-claude-tab'},'Claude 工作台')]]){
     ctx.effect(()=>ctx.slots.inject(name,()=>ctx.slots.register({name,key:id,inject:session=>({sessionId:session,rpc:(req,progress)=>syncRequest(ctx,session,{...req,sessionId:session},progress),workspace:info(workspaces().find(w=>w.sessionIds.includes(session))),launch:(...args)=>launch(session,...args)})},component)));
    }
