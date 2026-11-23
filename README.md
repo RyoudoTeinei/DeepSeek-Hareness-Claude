@@ -1,5 +1,18 @@
 # DeepSeek Hareness Claude
 
+## 选择 DSH 安装路线
+
+两种版本都在 VPS 上运行 Claude 对话，区别在于哪个环境负责读写项目和执行命令。在 DSH 的「插件 → 添加插件」里按用途粘贴对应的安装地址。
+
+| 执行环境 | 适用场景 | 安装地址（可复制） |
+| --- | --- | --- |
+| Windows 本机 CC · `main` | 直接使用本机 Claude Code 的文件、Bash 和 PowerShell 工具。安装步骤见下文。 | `https://github.com/RyoudoTeinei/DeepSeek-Hareness-Claude.git#main` |
+| Linux 虚拟机 CC · `feature/cloud-cc-local-vm`（预览） | 在本机独立虚拟机内执行，Windows 上的日常 CC 与 Claude Desktop 使用各自的配置。首次使用需准备虚拟机。 | `https://github.com/RyoudoTeinei/DeepSeek-Hareness-Claude.git#feature/cloud-cc-local-vm` |
+
+两个版本的包名相同，每个 DSH profile 选用一种。安装地址中的 `#分支名` 指定路线，浏览器中的 `/tree/...` 是代码浏览页。VM 版的安装、更新及本地安装迁移步骤见 [VM 分支说明](https://github.com/RyoudoTeinei/DeepSeek-Hareness-Claude/blob/feature/cloud-cc-local-vm/README.md)。
+
+## Windows 本机执行版
+
 在 DeepSeek Harness（DSH）的原生聊天界面和终端里使用 VPS 上的 Claude Code。默认由服务器上的 Claude 思考和管理对话，通过 SSH 调用本机 Claude Code，直接读写本机项目、运行命令。
 
 正常说「修改 README」「运行测试」即可，接入时插件会配置好执行位置。
